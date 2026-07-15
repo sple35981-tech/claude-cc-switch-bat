@@ -143,6 +143,7 @@ as_root() {
 
 contains_component() {
   local wanted="$1" item
+  [[ ${#SELECTED_COMPONENTS[@]} -eq 0 ]] && return 1
   for item in "${SELECTED_COMPONENTS[@]}"; do
     [[ "$item" == "$wanted" ]] && return 0
   done
