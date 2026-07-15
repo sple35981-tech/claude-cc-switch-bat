@@ -69,3 +69,39 @@ jobs:
             *.log
           if-no-files-found: ignore
           retention-days: 3
+
+  kali-rolling:
+    name: kali-rolling-container
+    runs-on: ubuntu-latest
+    container: kalilinux/kali-rolling
+    steps:
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bash python3 curl ca-certificates git
+
+      - uses: actions/checkout@v4
+
+      - name: Run Kali validation suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f /.dockerenv
+          bash -n install.sh
+          python3 -m unittest discover -s tests -v
+          bash tests/container_matrix.sh
+          bash install.sh --install cc-switch --dry-run --non-interactive \
+            --skip-network-check --no-progress --log-file /tmp/kali-cc-switch.log
+          grep -q 'DISTRO=kali' /tmp/kali-cc-switch.log
+          grep -q '100%' /tmp/kali-cc-switch.log
+
+      - name: Upload Kali failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-kali-rolling
+          path: /tmp/*.log
+          if-no-files-found: ignore
+          retention-days: 3
