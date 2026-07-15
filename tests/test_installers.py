@@ -10,6 +10,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASH = shutil.which("bash")
+UNIX_BASH_AVAILABLE = os.name != "nt" and BASH is not None
 
 
 def decode(data: bytes) -> str:
@@ -39,6 +40,7 @@ class InstallerTests(unittest.TestCase):
             check=False,
         )
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_bash_help_documents_progress_and_logging_options(self) -> None:
         result = self.run_bash("--help")
         output = decode(result.stdout + result.stderr)
@@ -46,6 +48,7 @@ class InstallerTests(unittest.TestCase):
         for option in ("--no-progress", "--quiet", "--log-file"):
             self.assertIn(option, output)
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_bash_dry_run_all_has_truthful_stages_and_summary(self) -> None:
         result = self.run_bash("--install", "all", "--dry-run", "--skip-network-check", "--no-progress")
         output = decode(result.stdout + result.stderr)
@@ -57,6 +60,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("安装汇总", output)
         self.assertRegex(output, r"耗时: \d+ 秒")
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_non_tty_output_has_no_cursor_control_sequences(self) -> None:
         result = self.run_bash("--install", "codex", "--dry-run", "--skip-network-check")
         output = decode(result.stdout + result.stderr)
@@ -64,6 +68,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("\r", output)
         self.assertNotRegex(output, r"\x1b\[[0-9;]*[A-Za-z]")
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_quiet_mode_keeps_summary_but_hides_info_noise(self) -> None:
         result = self.run_bash("--install", "codex", "--dry-run", "--skip-network-check", "--quiet")
         output = decode(result.stdout + result.stderr)
@@ -71,6 +76,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("安装汇总", output)
         self.assertNotIn("检测到:", output)
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_custom_log_is_created_and_proxy_credentials_are_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             log_path = pathlib.Path(td) / "installer.log"
@@ -106,6 +112,7 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn("alice:secret", log)
             self.assertIn("***@127.0.0.1", log)
 
+    @unittest.skipUnless(UNIX_BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_component_failure_continues_and_returns_nonzero(self) -> None:
         result = self.run_bash(
             "--install", "claude,codex", "--dry-run", "--skip-network-check", "--no-progress",
