@@ -52,7 +52,7 @@ esac
 EOF
 chmod +x "$FAKE_BIN/curl"
 
-for command in apt dpkg dnf zypper yum rpm brew unzip ditto sudo; do
+for command in apt dpkg dnf zypper yum rpm brew unzip ditto; do
   cat >"$FAKE_BIN/$command" <<EOF
 #!/usr/bin/env bash
 printf '%s %s\n' '$command' "\$*" >>"${CALLS}"
@@ -60,6 +60,13 @@ exit 0
 EOF
   chmod +x "$FAKE_BIN/$command"
 done
+
+cat >"$FAKE_BIN/sudo" <<EOF
+#!/usr/bin/env bash
+printf 'sudo %s\n' "\$*" >>"${CALLS}"
+exec "\$@"
+EOF
+chmod +x "$FAKE_BIN/sudo"
 
 # macOS path uses brew, so zip extraction is not needed in the simulated case.
 
