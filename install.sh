@@ -416,7 +416,7 @@ release_asset_url() {
   fi
 
   local json="$TMP_DIR/cc-switch-release.json"
-  download "$GITHUB_API_URL" "$json"
+  download "$GITHUB_API_URL" "$json" >&2
 
   local url=""
   if command -v python3 >/dev/null 2>&1; then
