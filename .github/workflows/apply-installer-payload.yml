@@ -53,7 +53,7 @@ jobs:
           echo 'e2ebb3406385c229a1b5e62480d9784f59c4c1c6d1486fe4e2b4fc01ecba62f1  install.ps1' | sha256sum -c -
           echo 'eff90bf7c3a74e2a4393caf4085a1bf5413133152b23ec022a7031f84ce9f617  README.md' | sha256sum -c -
           echo '12e3e177beebe5357b02f054e03f4c6bfacb7c410f58763941561636bfccf60f  README_EN.md' | sha256sum -c -
-          echo '22a03ff727d212dc28a9e1777a62d23c841278e858424b47a5d8ed4413e9174d  tests/test_installers.py' | sha256sum -c -
+          echo '7f197f9349f7e572f2d484351ce4a981c4446d2a466a39fcfaf42d79fa10c0e8  tests/test_installers.py' | sha256sum -c -
           echo '196aa0d0f0154a1888d202b93c7b4f3c8d94b33ce39a2fdbf6a22631384f194b  tests/container_matrix.sh' | sha256sum -c -
           echo 'bab0c2d2c8639de354672f70972386c8030b13645f6bfa7140aa6e8411824655  .github/workflows/test.yml' | sha256sum -c -
       - name: Run verification suite
