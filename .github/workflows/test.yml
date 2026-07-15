@@ -9,15 +9,11 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -30,32 +26,27 @@ jobs:
 
       - name: Run repository tests
         shell: bash
-        run: |
-          set +e
-          python -m unittest discover -s tests -v > repository-tests.log 2>&1
-          status=$?
-          cat repository-tests.log
-          exit "$status"
+        run: python -m unittest discover -s tests -v
+
+      - name: Run Linux command sandbox matrix
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python tests/container_matrix.py
 
       - name: Validate Bash syntax
         if: runner.os != 'Windows'
+        shell: bash
         run: bash -n install.sh
 
       - name: Bash all-components dry run
         if: runner.os != 'Windows'
         shell: bash
-        env:
-          INSTALLER_TEST_OS: linux
-          INSTALLER_TEST_ARCH: x86_64
-          INSTALLER_TEST_DISTRO: debian
-          INSTALLER_FAKE_ASSET_URL: https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb
-        run: bash install.sh --install all --dry-run --non-interactive --skip-network-check
+        run: bash install.sh --install all --dry-run --non-interactive --skip-network-check --no-progress
 
-      - name: Validate PowerShell syntax and all-components dry run
+      - name: Validate Windows PowerShell 5.1 and dry run
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          Start-Transcript -Path powershell-validation.log -Force
           $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
@@ -67,10 +58,7 @@ jobs:
             $errors | Format-List | Out-String | Write-Error
             exit 1
           }
-          $env:INSTALLER_TEST_ARCH = 'AMD64'
-          $env:INSTALLER_FAKE_ASSET_URL = 'https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Windows.msi'
-          .\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
-          Stop-Transcript
+          .\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck -NoProgress
 
       - name: Upload failure diagnostics
         if: failure()
@@ -78,7 +66,7 @@ jobs:
         with:
           name: failure-${{ matrix.os }}
           path: |
-            repository-tests.log
-            powershell-validation.log
+            *.log
+            **/*.log
           if-no-files-found: ignore
           retention-days: 3
