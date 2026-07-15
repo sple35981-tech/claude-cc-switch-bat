@@ -327,6 +327,14 @@ exit 0
         self.assertIn("--install all", content)
         self.assertIn("-Install all", content)
 
+    def test_release_metadata_download_log_cannot_pollute_asset_url(self) -> None:
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'download "$GITHUB_API_URL" "$json" >&2',
+            content,
+            "release_asset_url is used inside command substitution, so metadata logs must go to stderr",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
