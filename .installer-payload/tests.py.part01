@@ -3,6 +3,7 @@
             fake_curl.chmod(0o755)
             for name, body in {
                 "apt": "#!/usr/bin/env bash\nprintf 'apt:%s\\n' \"$*\" >> \"$CALLS_LOG\"\nexit 0\n",
+                "sudo": "#!/usr/bin/env bash\nexec \"$@\"\n",
                 "dpkg-query": "#!/usr/bin/env bash\necho 'cc-switch 9.9.9'\nexit 0\n",
                 "sha256sum": "#!/usr/bin/env bash\necho 'abc123  '$1\n",
             }.items():
