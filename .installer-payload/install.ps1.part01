@@ -1,0 +1,170 @@
+    }
+}
+
+function Resolve-Selection {
+    if ($Install.Count -gt 0) {
+        Add-Selection ($Install -join ',')
+    }
+    elseif (-not $NonInteractive -and [Environment]::UserInteractive) {
+        Write-Host ''
+        Write-Host '请选择要安装的组件（可多选，例如 1,3,4）：'
+        Write-Host '  1) Claude Code'
+        Write-Host '  2) OpenAI Codex CLI'
+        Write-Host '  3) Nous Research Hermes Agent'
+        Write-Host '  4) CC Switch'
+        Write-Host '  5) 全部安装'
+        Write-Host '  0) 退出'
+        Add-Selection (Read-Host '请输入选择')
+    }
+    else {
+        Add-Selection 'claude,cc-switch'
+        Write-Info '未检测到交互终端，使用兼容默认选择: Claude Code + CC Switch'
+    }
+
+    $filtered = @()
+    foreach ($component in $script:SelectedComponents) {
+        $skip = ($component -eq 'claude' -and $SkipClaude) -or
+                ($component -eq 'codex' -and $SkipCodex) -or
+                ($component -eq 'hermes' -and $SkipHermes) -or
+                ($component -eq 'cc-switch' -and $SkipCCSwitch)
+        if ($skip) { $script:SkippedComponents += (Get-ComponentLabel $component) }
+        else { $filtered += $component }
+    }
+    $script:SelectedComponents = $filtered
+    if ($script:SelectedComponents.Count -eq 0) { throw '没有可安装组件' }
+}
+
+function Get-RedactedUrl([string]$Url) {
+    return ($Url -replace '://[^/@]+@', '://***@')
+}
+
+function Get-WebParameters {
+    $parameters = @{
+        UseBasicParsing = $true
+        Headers = @{ 'User-Agent' = "ai-cli-installer/$($script:ProgramVersion)" }
+        TimeoutSec = 1800
+    }
+    if ($Proxy) { $parameters['Proxy'] = $Proxy }
+    return $parameters
+}
+
+function Invoke-LoggedCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][scriptblock]$Action
+    )
+    Write-Info $Description
+    Write-InstallerLog -Level 'COMMAND' -Message $Description
+    if ($DryRun) {
+        Write-Info "Dry-run: $Description"
+        return
+    }
+    if ($Quiet) {
+        & $Action *>> $script:ResolvedLogFile
+    }
+    else {
+        & $Action *>&1 | Tee-Object -FilePath $script:ResolvedLogFile -Append
+    }
+}
+
+function Invoke-Download {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $safeUri = Get-RedactedUrl $Uri
+    Write-Info "下载 ${Label}: $safeUri"
+    Write-InstallerLog -Level 'DOWNLOAD' -Message "url=$safeUri destination=$OutFile"
+    if ($DryRun) { return }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
+    $parameters = Get-WebParameters
+    $parameters['Uri'] = $Uri
+    $parameters['OutFile'] = $OutFile
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        try {
+            if ($script:UseDynamicProgress) {
+                Write-Progress -Activity "下载 $Label" -Status "尝试 $attempt/4" -PercentComplete ([Math]::Min(95, $attempt * 20))
+            }
+            Invoke-WebRequest @parameters | Out-Null
+            if ($script:UseDynamicProgress) { Write-Progress -Activity "下载 $Label" -Completed }
+            return
+        }
+        catch {
+            $lastError = $_
+            Write-Warn "下载失败（第 $attempt/4 次）: $($_.Exception.Message)"
+            if ($attempt -lt 4) { Start-Sleep -Seconds ([Math]::Min(8, $attempt * 2)) }
+        }
+    }
+    throw "下载 $Label 失败: $($lastError.Exception.Message)"
+}
+
+function Write-FileMetadata {
+    param([string]$Path, [string]$Label)
+    if ($DryRun) {
+        Write-Info "${Label}: Dry-run，跳过本地 SHA-256 计算"
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Path)) { throw "文件不存在: $Path" }
+    $item = Get-Item -LiteralPath $Path
+    $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
+    Write-Info "${Label}: 大小 $($item.Length) bytes；本地 SHA-256 $($hash.Hash)"
+    Write-InstallerLog -Level 'ARTIFACT' -Message "label=$Label path=$Path size=$($item.Length) SHA256=$($hash.Hash)"
+}
+
+function Test-ServiceEndpoint([string]$Label, [string]$Uri) {
+    if ($SkipNetworkCheck -or $DryRun) { return }
+    try {
+        $parameters = Get-WebParameters
+        $parameters['Uri'] = $Uri
+        $parameters['Method'] = 'Head'
+        $parameters['TimeoutSec'] = 20
+        Invoke-WebRequest @parameters | Out-Null
+        Write-Info "网络检查通过: $Label"
+    }
+    catch {
+        Write-Warn "无法访问 ${Label}: $Uri；安装阶段仍会按重试策略继续"
+    }
+}
+
+function Invoke-NetworkChecks {
+    if ($SkipNetworkCheck -or $DryRun) {
+        Write-Info '已跳过网络预检'
+        return
+    }
+    if ($script:SelectedComponents -contains 'claude') { Test-ServiceEndpoint 'Claude' 'https://claude.ai' }
+    if ($script:SelectedComponents -contains 'codex') { Test-ServiceEndpoint 'Codex' 'https://chatgpt.com' }
+    if ($script:SelectedComponents -contains 'hermes') { Test-ServiceEndpoint 'Hermes' 'https://hermes-agent.nousresearch.com' }
+    if ($script:SelectedComponents -contains 'cc-switch') { Test-ServiceEndpoint 'GitHub API' 'https://api.github.com' }
+}
+
+function Show-Stage([string]$Component, [string]$Message) {
+    Show-InstallerProgress "$Component`: $Message"
+}
+
+function Test-InstalledCommand([string]$CommandName, [string]$Label) {
+    if ($DryRun) { Write-Info "${Label}: Dry-run 验证通过"; return }
+    $command = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if ($command) {
+        $version = & $CommandName --version 2>&1 | Select-Object -First 1
+        Write-Info "${Label}: 已检测到 $version"
+    }
+    else {
+        Write-Warn "${Label}: 当前 PowerShell 尚未找到 $CommandName，通常重新打开终端后生效"
+    }
+}
+
+function Install-ScriptComponent {
+    param(
+        [string]$Component,
+        [string]$Label,
+        [string]$Source,
+        [string]$Url,
+        [string]$InstallerPath
+    )
+    Show-Stage $Label '准备官方安装源'
+    Write-Info "$Label 来源: $Source ($Url)"
+    if ($env:INSTALLER_TEST_FAIL_COMPONENT -eq $Component) { throw "$Label 测试注入失败" }
+
+    Show-Stage $Label '下载官方安装器'
