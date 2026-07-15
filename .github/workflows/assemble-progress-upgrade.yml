@@ -37,7 +37,8 @@ jobs:
           echo "01f5951423c717a8fe53a6a85d6ab2f940121f1d07b0e9a9e7cec2dfa46b5060  /tmp/installer-payload.tar.gz" | sha256sum -c -
           tar -tzf /tmp/installer-payload.tar.gz
           tar -xzf /tmp/installer-payload.tar.gz -C .
-          rm -rf .payload .github/workflows/assemble-progress-upgrade.yml
+          git restore --source=HEAD -- .github/workflows/test.yml
+          rm -rf .payload
           chmod +x install.sh tests/container_matrix.py
 
       - name: Commit assembled upgrade
