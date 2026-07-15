@@ -59,11 +59,24 @@ jobs:
       - name: Run verification suite
         shell: bash
         run: |
-          set -Eeuo pipefail
-          bash -n install.sh
-          python -m py_compile tests/test_installers.py
-          python -m unittest discover -s tests -v
-          bash tests/container_matrix.sh
+          set +e
+          {
+            set -Eeuo pipefail
+            bash -n install.sh
+            python -m py_compile tests/test_installers.py
+            python -m unittest discover -s tests -v
+            bash tests/container_matrix.sh
+          } > verification.log 2>&1
+          status=$?
+          cat verification.log
+          exit "$status"
+      - name: Upload verification diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-assembly-verification
+          path: verification.log
+          retention-days: 3
       - name: Commit verified installer files
         shell: bash
         run: |
