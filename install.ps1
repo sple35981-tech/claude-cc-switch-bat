@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('stable', 'latest')]
     [string]$Channel = 'stable',
