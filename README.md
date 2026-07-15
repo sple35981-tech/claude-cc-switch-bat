@@ -1,32 +1,35 @@
-# Claude Code / Codex / Hermes / CC Switch 一键安装集合器
+# AI CLI Installer Collector
 
-面向 Windows、macOS、Linux、Kali 和 WSL 的四合一安装器。一个脚本可以交互选择安装：
+一个面向 Windows、macOS、Linux、Kali 和 WSL 的四合一安装集合器，可以自由选择安装：
 
-- Claude Code：Anthropic 官方安装器
-- OpenAI Codex CLI：OpenAI 官方安装器
-- Hermes Agent：Nous Research 官方安装器
-- CC Switch：`farion1231/cc-switch` 官方 GitHub Releases
+- Claude Code（Anthropic 官方安装器）
+- OpenAI Codex CLI（OpenAI 官方安装器）
+- Hermes Agent（Nous Research 官方安装器）
+- CC Switch（`farion1231/cc-switch` 官方 GitHub Releases）
 
-脚本不内置第三方中转站、共享账号、API Key 或默认镜像。针对中国网络环境提供当前进程代理、自定义 GitHub 下载前缀、重试和网络诊断，但不会绕过地区、账号或服务条款限制。
+脚本不内置共享账号、API Key、第三方中转站或默认镜像，也不会绕过地区、账号或服务条款限制。
 
-## 新版安装体验
+## 新版安装界面
 
-每个组件都显示四个真实阶段：
-
-```text
-准备 → 下载 → 安装 → 验证
-```
-
-交互式终端显示总进度条、当前组件和阶段；CI、重定向输出、SSH 无 TTY 或 `--no-progress` 会自动使用稳定的逐行输出。最终汇总成功、跳过、失败阶段、退出码、总耗时和详细日志路径。
+真实终端会显示总进度条，每个组件固定经过四个阶段：
 
 ```text
-[PROGRESS] [##############--------------] 50% OK Codex CLI / 下载 - 安装器已准备
-[SUMMARY] 成功: Codex CLI, Hermes Agent
-[SUMMARY] 耗时: 18 秒
-[SUMMARY] 详细日志: ~/.local/state/ai-cli-installer/install-....log
+============================================================
+  AI CLI Installer Collector v3.0.0
+  Claude Code / Codex / Hermes / CC Switch
+============================================================
+[##################------]  75% (11/15) CC Switch · 安装 · 安装 deb 包
 ```
 
-## 一键安装
+CI、管道和没有 TTY 的环境会自动退化为稳定的逐行输出：
+
+```text
+[STEP 11/15]  73% CC Switch · 安装 · 安装 deb 包
+```
+
+每个组件都会记录：准备、下载、安装、验证、耗时、失败阶段和退出码。一个组件失败后，脚本会继续处理其他已选择组件，并在最后返回非零退出码。
+
+## 一键运行
 
 ### Windows PowerShell
 
@@ -34,7 +37,7 @@
 irm https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.ps1 | iex
 ```
 
-需要参数时先下载：
+需要参数时建议先下载：
 
 ```powershell
 irm https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.ps1 -OutFile install.ps1
@@ -54,47 +57,74 @@ curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat
   | bash -s -- --install codex,hermes
 ```
 
-支持的组件名：`claude,codex,hermes,cc-switch,all`。
+## 菜单选择
 
-## 进度、日志与安静模式
+无参数运行时可以输入多个编号，例如 `1,3,4`：
 
-### 禁用动态进度条
+```text
+1) Claude Code
+2) OpenAI Codex CLI
+3) Nous Research Hermes Agent
+4) CC Switch
+5) 全部安装
+0) 退出
+```
 
-适合日志采集、CI 或终端显示异常时：
+组件名称支持：
+
+```text
+claude,codex,hermes,cc-switch,all
+```
+
+## 常用参数
+
+| 功能 | Bash | PowerShell |
+|---|---|---|
+| 选择组件 | `--install all` | `-Install all` |
+| Claude 通道 | `--channel latest` | `-Channel latest` |
+| 当前进程代理 | `--proxy URL` | `-Proxy URL` |
+| GitHub 下载前缀 | `--github-proxy URL` | `-GitHubProxy URL` |
+| 只预览 | `--dry-run` | `-DryRun` |
+| 非交互 | `--non-interactive` | `-NonInteractive` |
+| 跳过网络预检 | `--skip-network-check` | `-SkipNetworkCheck` |
+| 静默终端 | `--quiet` | `-Quiet` |
+| 禁用动态进度 | `--no-progress` | `-NoProgress` |
+| 指定日志 | `--log-file PATH` | `-LogFile PATH` |
+| Bash 调试日志 | `--debug` | — |
+| Bash 保留临时文件 | `--keep-temp` | — |
+
+Kali 示例：
 
 ```bash
-./install.sh --install all --no-progress
+./install.sh --install all --log-file ~/ai-cli-install.log
 ```
 
-```powershell
-.\install.ps1 -Install all -NoProgress
-```
-
-### 只显示警告、错误和汇总
+服务器/CI 示例：
 
 ```bash
-./install.sh --install all --quiet
+./install.sh --install codex,hermes \
+  --non-interactive --no-progress --log-file ./installer.log
 ```
 
-```powershell
-.\install.ps1 -Install all -Quiet
+## 日志与排错
+
+Bash 默认日志目录：
+
+```text
+~/.local/state/ai-cli-installer/logs/
 ```
 
-### 指定日志文件
+Windows 默认日志目录：
 
-```bash
-./install.sh --install cc-switch --log-file ./install.log
+```text
+%LOCALAPPDATA%\ai-cli-installer\logs\
 ```
 
-```powershell
-.\install.ps1 -Install cc-switch -LogFile .\install.log
-```
+日志包含系统信息、官方 URL、命令、阶段、耗时和错误信息。代理 URL 中的用户名/密码会被遮盖。脚本不会主动记录 Token 或 API Key。
 
-非 dry-run 默认自动创建 UTF-8 日志。代理 URL 中的用户名和密码、Authorization 内容和常见 API Key 环境变量会在日志中脱敏。日志文件默认仅当前用户可读。
+下载完成后，脚本会记录文件的本地 SHA-256 指纹。该指纹用于排错和比对，不代表上游发布方提供了签名或官方校验值。
 
-## 中国网络环境
-
-本地代理只对当前安装进程生效：
+### 中国网络环境
 
 ```bash
 ./install.sh --install all --proxy http://127.0.0.1:7890
@@ -104,21 +134,12 @@ curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat
 .\install.ps1 -Install all -Proxy http://127.0.0.1:7890
 ```
 
-只有 GitHub Release 下载需要特殊链路时，才使用自己信任的前缀：
+GitHub Release 确实需要额外链路时，可以显式提供自己信任的下载前缀。脚本默认不启用任何镜像。
+
+## 安装前审计
 
 ```bash
-./install.sh --install cc-switch --github-proxy https://your-trusted-proxy.example/
-```
-
-```powershell
-.\install.ps1 -Install cc-switch -GitHubProxy https://your-trusted-proxy.example/
-```
-
-## Dry-run 审计
-
-不会下载或安装：
-
-```bash
+bash -n install.sh
 ./install.sh --install all --dry-run --skip-network-check --no-progress
 ```
 
@@ -126,38 +147,26 @@ curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat
 .\install.ps1 -Install all -DryRun -SkipNetworkCheck -NoProgress
 ```
 
-## 退出状态
-
-- `0`：所有选中组件安装流程成功；验证阶段的“需要重新打开终端”属于警告。
-- `1`：至少一个组件失败，但其他组件仍会继续处理。
-- `2`：参数、平台或初始化错误，无法开始安装。
-
-自动化脚本应检查 exit code，并在失败时读取汇总中的“失败阶段”和日志文件。
-
-## 常用参数
-
-| 功能 | Bash | PowerShell |
-|---|---|---|
-| 选择组件 | `--install LIST` | `-Install LIST` |
-| Claude 通道 | `--channel stable\|latest` | `-Channel stable\|latest` |
-| 当前进程代理 | `--proxy URL` | `-Proxy URL` |
-| GitHub 下载前缀 | `--github-proxy URL` | `-GitHubProxy URL` |
-| 自定义日志 | `--log-file PATH` | `-LogFile PATH` |
-| 禁用动态进度 | `--no-progress` | `-NoProgress` |
-| 安静模式 | `--quiet` | `-Quiet` |
-| 审计模式 | `--dry-run` | `-DryRun` |
-| 非交互模式 | `--non-interactive` | `-NonInteractive` |
-| 跳过网络检查 | `--skip-network-check` | `-SkipNetworkCheck` |
-
-## 验证
-
-仓库包含 Python 单元测试和命令沙箱矩阵，覆盖 Kali/DEB、Fedora/RPM、Arch/AppImage、macOS ARM64、无 TTY、失败继续执行、日志脱敏和 Release URL 污染回归。
+## 开发与验证
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 tests/container_matrix.py
 bash -n install.sh
-./install.sh --install all --dry-run --skip-network-check --no-progress
+bash tests/container_matrix.sh
 ```
 
-GitHub Actions 在 Ubuntu、macOS 和 Windows PowerShell 5.1 上继续验证。
+容器矩阵使用假下载器和假包管理器，不会安装真实软件，覆盖：
+
+- Kali / Debian：DEB
+- Fedora：RPM
+- Arch/其他 Linux：AppImage
+- macOS：Homebrew 路径
+- 无 TTY 输出
+- 组件故障继续执行
+- GitHub Release URL 污染回归
+
+GitHub Actions 还会在 Ubuntu、macOS 和 Windows 上验证 Bash/PowerShell 语法和全组件 dry-run。
+
+## 许可证
+
+MIT。各组件仍分别遵循自身许可证、服务条款和地区可用性规则。
