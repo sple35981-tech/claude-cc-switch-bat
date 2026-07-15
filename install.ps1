@@ -3,11 +3,17 @@ param(
     [ValidateSet('stable', 'latest')]
     [string]$Channel = 'stable',
 
+    [string[]]$Install = @(),
+
     [string]$Proxy = '',
 
     [string]$GitHubProxy = '',
 
     [switch]$SkipClaude,
+
+    [switch]$SkipCodex,
+
+    [switch]$SkipHermes,
 
     [switch]$SkipCCSwitch,
 
@@ -23,9 +29,15 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ClaudeInstallUrl = 'https://claude.ai/install.ps1'
+$CodexInstallUrl = 'https://chatgpt.com/codex/install.ps1'
+$HermesInstallUrl = 'https://hermes-agent.nousresearch.com/install.ps1'
 $CCSwitchRepo = 'farion1231/cc-switch'
 $GitHubApiUrl = "https://api.github.com/repos/$CCSwitchRepo/releases/latest"
-$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-installer-" + [guid]::NewGuid().ToString('N'))
+$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-cli-installer-" + [guid]::NewGuid().ToString('N'))
+$script:SelectedComponents = @()
+$script:SuccessfulComponents = @()
+$script:FailedComponents = @()
+$script:SkippedComponents = @()
 
 function Write-Info([string]$Message) {
     Write-Host "[INFO] $Message" -ForegroundColor Cyan
@@ -33,6 +45,113 @@ function Write-Info([string]$Message) {
 
 function Write-Warn([string]$Message) {
     Write-Warning $Message
+}
+
+function Get-ComponentLabel([string]$Component) {
+    switch ($Component) {
+        'claude' { return 'Claude Code' }
+        'codex' { return 'Codex CLI' }
+        'hermes' { return 'Hermes Agent' }
+        'cc-switch' { return 'CC Switch' }
+        default { return $Component }
+    }
+}
+
+function Add-SelectedComponent([string]$Component) {
+    if ($script:SelectedComponents -notcontains $Component) {
+        $script:SelectedComponents += $Component
+    }
+}
+
+function ConvertTo-ComponentName([string]$Token) {
+    $normalized = $Token.Trim().ToLowerInvariant()
+    switch ($normalized) {
+        { $_ -in @('1', 'claude', 'claude-code', 'claudecode') } { return 'claude' }
+        { $_ -in @('2', 'codex', 'codex-cli', 'codexcli') } { return 'codex' }
+        { $_ -in @('3', 'hermes', 'hermes-agent', 'hermesagent') } { return 'hermes' }
+        { $_ -in @('4', 'cc-switch', 'ccswitch', 'cc_switch') } { return 'cc-switch' }
+        { $_ -in @('5', 'all', '*') } { return 'all' }
+        { $_ -in @('0', 'exit', 'quit', 'q') } { return 'exit' }
+        '' { return '' }
+        default { throw "未知组件: $Token。可选 claude、codex、hermes、cc-switch、all。" }
+    }
+}
+
+function Add-SelectionTokens([string[]]$Entries) {
+    foreach ($entry in $Entries) {
+        foreach ($token in ($entry -split '[,\s]+')) {
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                continue
+            }
+            $component = ConvertTo-ComponentName -Token $token
+            switch ($component) {
+                '' { }
+                'exit' { exit 0 }
+                'all' {
+                    Add-SelectedComponent 'claude'
+                    Add-SelectedComponent 'codex'
+                    Add-SelectedComponent 'hermes'
+                    Add-SelectedComponent 'cc-switch'
+                }
+                default { Add-SelectedComponent $component }
+            }
+        }
+    }
+}
+
+function Show-InstallMenu {
+    Write-Host ''
+    Write-Host '请选择要安装的组件（可多选，例如 1,3,4）：' -ForegroundColor Yellow
+    Write-Host '  1) Claude Code'
+    Write-Host '  2) OpenAI Codex CLI'
+    Write-Host '  3) Nous Research Hermes Agent'
+    Write-Host '  4) CC Switch'
+    Write-Host '  5) 全部安装'
+    Write-Host '  0) 退出'
+    return (Read-Host '请输入选择')
+}
+
+function Resolve-ComponentSelection {
+    if ($Install.Count -gt 0) {
+        Add-SelectionTokens -Entries $Install
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:INSTALLER_TEST_SELECTION)) {
+        Add-SelectionTokens -Entries @($env:INSTALLER_TEST_SELECTION)
+    }
+    elseif (-not $NonInteractive) {
+        Add-SelectionTokens -Entries @(Show-InstallMenu)
+    }
+    else {
+        Write-Info '非交互模式未指定组件，使用兼容默认选择: Claude Code + CC Switch'
+        Add-SelectedComponent 'claude'
+        Add-SelectedComponent 'cc-switch'
+    }
+
+    $filtered = @()
+    foreach ($component in $script:SelectedComponents) {
+        $skip = $false
+        switch ($component) {
+            'claude' { $skip = [bool]$SkipClaude }
+            'codex' { $skip = [bool]$SkipCodex }
+            'hermes' { $skip = [bool]$SkipHermes }
+            'cc-switch' { $skip = [bool]$SkipCCSwitch }
+        }
+        if ($skip) {
+            $script:SkippedComponents += (Get-ComponentLabel $component)
+        }
+        else {
+            $filtered += $component
+        }
+    }
+    $script:SelectedComponents = $filtered
+
+    if ($script:SelectedComponents.Count -eq 0) {
+        throw '没有可安装组件，请使用 -Install 选择至少一项。'
+    }
+}
+
+function Test-ComponentSelected([string]$Component) {
+    return ($script:SelectedComponents -contains $Component)
 }
 
 function Invoke-Step {
@@ -50,7 +169,7 @@ function Invoke-Step {
 function Get-WebRequestParameters {
     $parameters = @{
         UseBasicParsing = $true
-        Headers = @{ 'User-Agent' = 'cc-switch-installer/1.0' }
+        Headers = @{ 'User-Agent' = 'ai-cli-installer/2.0' }
     }
     if ($Proxy) {
         $parameters['Proxy'] = $Proxy
@@ -60,7 +179,7 @@ function Get-WebRequestParameters {
 
 function Get-RestMethodParameters {
     $parameters = @{
-        Headers = @{ 'User-Agent' = 'cc-switch-installer/1.0' }
+        Headers = @{ 'User-Agent' = 'ai-cli-installer/2.0' }
     }
     if ($Proxy) {
         $parameters['Proxy'] = $Proxy
@@ -100,24 +219,29 @@ function Invoke-Download {
     throw "下载失败: $Url`n$lastError"
 }
 
+function Test-NetworkUrl([string]$Url) {
+    try {
+        $params = Get-WebRequestParameters
+        $params['Uri'] = $Url
+        $params['Method'] = 'Head'
+        $params['TimeoutSec'] = 15
+        Invoke-WebRequest @params | Out-Null
+    }
+    catch {
+        Write-Warn "无法访问 $Url。可使用 -Proxy；GitHub 下载还可使用 -GitHubProxy。"
+    }
+}
+
 function Test-Network {
     if ($SkipNetworkCheck -or $DryRun) {
         return
     }
 
-    Write-Info '检查网络连通性（失败只提示，不绕过服务地区或账号限制）'
-    foreach ($url in @('https://claude.ai', 'https://api.github.com')) {
-        try {
-            $params = Get-WebRequestParameters
-            $params['Uri'] = $url
-            $params['Method'] = 'Head'
-            $params['TimeoutSec'] = 15
-            Invoke-WebRequest @params | Out-Null
-        }
-        catch {
-            Write-Warn "无法访问 $url。可使用 -Proxy；GitHub 下载还可使用 -GitHubProxy。"
-        }
-    }
+    Write-Info '检查所选组件网络连通性（失败只提示，不绕过地区、账号或服务条款限制）'
+    if (Test-ComponentSelected 'claude') { Test-NetworkUrl 'https://claude.ai' }
+    if (Test-ComponentSelected 'codex') { Test-NetworkUrl 'https://chatgpt.com' }
+    if (Test-ComponentSelected 'hermes') { Test-NetworkUrl 'https://hermes-agent.nousresearch.com' }
+    if (Test-ComponentSelected 'cc-switch') { Test-NetworkUrl 'https://api.github.com' }
 }
 
 function Add-GitHubProxyPrefix([string]$Url) {
@@ -137,17 +261,29 @@ function Get-WindowsArchitecture {
 }
 
 function Install-ClaudeCode {
-    if ($SkipClaude) {
-        Write-Info '已跳过 Claude Code'
-        return
-    }
-
     $installer = Join-Path $TempRoot 'claude-install.ps1'
     Write-Info "准备从 Anthropic 官方地址安装 Claude Code（通道: $Channel）"
     Invoke-Download -Url $ClaudeInstallUrl -Destination $installer
-
     Invoke-Step -Description "执行官方安装器: $ClaudeInstallUrl $Channel" -Action {
         & $installer $Channel
+    }
+}
+
+function Install-Codex {
+    $installer = Join-Path $TempRoot 'codex-install.ps1'
+    Write-Info '准备从 OpenAI 官方地址安装 Codex CLI'
+    Invoke-Download -Url $CodexInstallUrl -Destination $installer
+    Invoke-Step -Description "执行官方安装器: $CodexInstallUrl" -Action {
+        & $installer
+    }
+}
+
+function Install-Hermes {
+    $installer = Join-Path $TempRoot 'hermes-install.ps1'
+    Write-Info '准备从 Nous Research 官方地址安装 Hermes Agent'
+    Invoke-Download -Url $HermesInstallUrl -Destination $installer
+    Invoke-Step -Description "执行官方安装器: $HermesInstallUrl" -Action {
+        & $installer
     }
 }
 
@@ -191,11 +327,6 @@ function Get-CCSwitchAssetUrl([string]$Architecture) {
 }
 
 function Install-CCSwitch {
-    if ($SkipCCSwitch) {
-        Write-Info '已跳过 CC Switch'
-        return
-    }
-
     $architecture = Get-WindowsArchitecture
     Write-Info "准备安装 CC Switch（官方仓库: $CCSwitchRepo，架构: $architecture）"
     $assetUrl = Get-CCSwitchAssetUrl -Architecture $architecture
@@ -216,29 +347,74 @@ function Install-CCSwitch {
     }
 }
 
-function Test-InstallationResult {
-    Write-Info '安装结果检查'
-    if (-not $SkipClaude) {
-        $claude = Get-Command claude -ErrorAction SilentlyContinue
-        if ($claude) {
-            & claude --version
+function Invoke-Component([string]$Component) {
+    $label = Get-ComponentLabel $Component
+    Write-Host ''
+    Write-Info "========== $label =========="
+    try {
+        if ($env:INSTALLER_TEST_FAIL_COMPONENT -eq $Component) {
+            throw "测试注入失败: $label"
         }
-        else {
-            Write-Warn '当前终端还找不到 claude。请关闭并重新打开终端，然后运行 claude --version。'
+        switch ($Component) {
+            'claude' { Install-ClaudeCode }
+            'codex' { Install-Codex }
+            'hermes' { Install-Hermes }
+            'cc-switch' { Install-CCSwitch }
+            default { throw "内部错误，未知组件: $Component" }
+        }
+        $script:SuccessfulComponents += $label
+        Write-Info "$label`: 成功"
+    }
+    catch {
+        $script:FailedComponents += $label
+        Write-Warn "$label`: 失败，继续处理其他组件。$($_.Exception.Message)"
+    }
+}
+
+function Test-InstallationResult {
+    if ($DryRun) {
+        return
+    }
+    Write-Info '安装结果检查'
+    foreach ($component in $script:SelectedComponents) {
+        switch ($component) {
+            'claude' {
+                if (Get-Command claude -ErrorAction SilentlyContinue) { & claude --version }
+                else { Write-Warn '当前终端还找不到 claude，请重新打开终端。' }
+            }
+            'codex' {
+                if (Get-Command codex -ErrorAction SilentlyContinue) { & codex --version }
+                else { Write-Warn '当前终端还找不到 codex，请重新打开终端。' }
+            }
+            'hermes' {
+                if (Get-Command hermes -ErrorAction SilentlyContinue) { & hermes --version }
+                else { Write-Warn '当前终端还找不到 hermes，请重新打开终端。' }
+            }
+            'cc-switch' { Write-Info 'CC Switch 安装完成后可从开始菜单启动。' }
         }
     }
-    if (-not $SkipCCSwitch) {
-        Write-Info 'CC Switch 安装完成后可从开始菜单启动。'
+}
+
+function Write-Summary {
+    Write-Host ''
+    Write-Info '========== 安装汇总 =========='
+    if ($script:SuccessfulComponents.Count -gt 0) {
+        Write-Info ('成功: ' + ($script:SuccessfulComponents -join ', '))
+    }
+    if ($script:SkippedComponents.Count -gt 0) {
+        Write-Info ('跳过: ' + ($script:SkippedComponents -join ', '))
+    }
+    if ($script:FailedComponents.Count -gt 0) {
+        Write-Warn ('失败: ' + ($script:FailedComponents -join ', '))
     }
 }
 
 try {
-    if ($SkipClaude -and $SkipCCSwitch) {
-        throw 'Claude Code 和 CC Switch 不能同时跳过。'
-    }
+    Write-Info 'Claude Code / Codex / Hermes / CC Switch 安装集合器（Windows）'
+    Write-Info '说明：只使用各项目官方安装源，不绕过地区、账号或服务条款限制。'
 
-    Write-Info 'Claude Code + CC Switch 跨平台一键安装器（Windows）'
-    Write-Info '说明：本脚本不绕过 Claude 的地区、账号或服务条款限制。'
+    Resolve-ComponentSelection
+
     if ($Proxy) {
         $env:HTTP_PROXY = $Proxy
         $env:HTTPS_PROXY = $Proxy
@@ -252,16 +428,20 @@ try {
         New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
     }
 
+    Write-Info ('已选择: ' + (($script:SelectedComponents | ForEach-Object { Get-ComponentLabel $_ }) -join ', '))
     Test-Network
-    Install-ClaudeCode
-    Install-CCSwitch
+    foreach ($component in $script:SelectedComponents) {
+        Invoke-Component -Component $component
+    }
 
+    Test-InstallationResult
+    Write-Summary
     if ($DryRun) {
         Write-Info 'Dry-run 完成，未修改系统。'
     }
-    else {
-        Test-InstallationResult
-        Write-Info '全部操作完成。运行 claude 开始登录，打开 CC Switch 配置供应商。'
+
+    if ($script:FailedComponents.Count -gt 0) {
+        exit 1
     }
 }
 catch {
