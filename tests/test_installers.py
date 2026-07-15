@@ -276,6 +276,13 @@ exit 0
         content = (ROOT / "install.ps1").read_bytes()
         self.assertTrue(content.startswith(b"\xef\xbb\xbf"), "Windows PowerShell 5.1 requires a UTF-8 BOM for non-ASCII scripts")
 
+    def test_bash_braces_variables_before_non_ascii_text(self) -> None:
+        import re
+
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        unsafe = re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]", content)
+        self.assertEqual(unsafe, [], f"Bash 3.2 may absorb UTF-8 bytes into variable names: {unsafe}")
+
     def test_bash_uses_macos_portable_find(self) -> None:
         content = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("-maxdepth", content)
