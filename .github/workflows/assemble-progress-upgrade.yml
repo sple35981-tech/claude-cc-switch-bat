@@ -7,17 +7,25 @@ on:
     paths:
       - '.payload/**'
       - '.github/workflows/assemble-progress-upgrade.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.payload/**'
+      - '.github/workflows/assemble-progress-upgrade.yml'
 
 permissions:
   contents: write
 
 jobs:
   assemble:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout payload branch
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Verify and assemble validated files
@@ -41,4 +49,4 @@ jobs:
           git add -A
           git diff --cached --check
           git commit -m 'feat: add detailed progress logs and validation'
-          git push
+          git push origin HEAD:${{ github.head_ref || github.ref_name }}
