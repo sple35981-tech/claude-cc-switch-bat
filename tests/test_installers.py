@@ -254,6 +254,14 @@ exit 0
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stable", result.stderr + result.stdout)
 
+    def test_bash_guards_empty_selected_array_for_bash_32(self) -> None:
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('[[ ${#SELECTED_COMPONENTS[@]} -eq 0 ]] && return 1', content)
+
+    def test_windows_installer_has_utf8_bom_for_powershell_51(self) -> None:
+        content = (ROOT / "install.ps1").read_bytes()
+        self.assertTrue(content.startswith(b"\xef\xbb\xbf"), "Windows PowerShell 5.1 requires a UTF-8 BOM for non-ASCII scripts")
+
     def test_bash_uses_macos_portable_find(self) -> None:
         content = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("-maxdepth", content)
