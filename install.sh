@@ -178,7 +178,7 @@ normalize_selection_token() {
     5|all|'*') printf 'all' ;;
     0|exit|quit|q) printf 'exit' ;;
     '') printf '' ;;
-    *) die "未知组件: $token。可选 claude、codex、hermes、cc-switch、all" ;;
+    *) die "未知组件: ${token}。可选 claude、codex、hermes、cc-switch、all" ;;
   esac
 }
 
@@ -289,7 +289,7 @@ network_check_url() {
   local url="$1"
   if command -v curl >/dev/null 2>&1; then
     if ! curl --head --location --silent --show-error --connect-timeout 8 --max-time 20 "$url" >/dev/null; then
-      warn "无法访问 $url；可使用 --proxy，GitHub 下载还可使用 --github-proxy"
+      warn "无法访问 ${url}；可使用 --proxy，GitHub 下载还可使用 --github-proxy"
     fi
   fi
 }
@@ -355,7 +355,7 @@ maybe_fail_component() {
 
 install_claude() {
   local installer="$TMP_DIR/claude-install.sh"
-  log "准备从 Anthropic 官方地址安装 Claude Code（通道: $CHANNEL）"
+  log "准备从 Anthropic 官方地址安装 Claude Code（通道: ${CHANNEL}）"
   download "$CLAUDE_INSTALL_URL" "$installer"
   if [[ $DRY_RUN -eq 1 ]]; then
     log "执行: bash $(printf '%q' "$installer") $(printf '%q' "$CHANNEL")"
@@ -574,7 +574,7 @@ run_component() {
     log "$label: 成功"
   else
     FAILED_COMPONENTS+=("$label")
-    warn "$label: 失败（退出码 $status），继续处理其他组件"
+    warn "$label: 失败（退出码 ${status}），继续处理其他组件"
   fi
 }
 
