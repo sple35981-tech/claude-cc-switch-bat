@@ -20,7 +20,8 @@ class InstallerTests(unittest.TestCase):
     maxDiff = None
 
     def run_bash(self, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
-        self.assertIsNotNone(BASH)
+        if os.name == "nt" or BASH is None:
+            self.skipTest("Bash execution tests run on Ubuntu and macOS")
         merged = os.environ.copy()
         merged.update(
             {
