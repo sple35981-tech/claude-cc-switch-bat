@@ -6,6 +6,11 @@ on:
     paths:
       - '.installer-payload/**'
       - '.github/workflows/apply-installer-payload.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.installer-payload/**'
+      - '.github/workflows/apply-installer-payload.yml'
 
 permissions:
   contents: write
