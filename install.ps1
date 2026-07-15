@@ -21,30 +21,106 @@ param(
 
     [switch]$NonInteractive,
 
-    [switch]$SkipNetworkCheck
+    [switch]$SkipNetworkCheck,
+
+    [switch]$Quiet,
+
+    [switch]$NoProgress,
+
+    [string]$LogFile = '',
+
+    [switch]$DebugInstaller
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-
-$ClaudeInstallUrl = 'https://claude.ai/install.ps1'
-$CodexInstallUrl = 'https://chatgpt.com/codex/install.ps1'
-$HermesInstallUrl = 'https://hermes-agent.nousresearch.com/install.ps1'
-$CCSwitchRepo = 'farion1231/cc-switch'
-$GitHubApiUrl = "https://api.github.com/repos/$CCSwitchRepo/releases/latest"
-$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-cli-installer-" + [guid]::NewGuid().ToString('N'))
+$script:ProgramName = 'AI CLI Installer Collector'
+$script:ProgramVersion = '2.1.0'
+$script:ClaudeInstallUrl = 'https://claude.ai/install.ps1'
+$script:CodexInstallUrl = 'https://chatgpt.com/codex/install.ps1'
+$script:HermesInstallUrl = 'https://hermes-agent.nousresearch.com/install.ps1'
+$script:CCSwitchRepo = 'farion1231/cc-switch'
+$script:GitHubApiUrl = "https://api.github.com/repos/$($script:CCSwitchRepo)/releases/latest"
+$script:TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-cli-installer-" + [guid]::NewGuid().ToString('N'))
 $script:SelectedComponents = @()
 $script:SuccessfulComponents = @()
 $script:FailedComponents = @()
 $script:SkippedComponents = @()
+$script:FailureDetails = @()
+$script:CurrentStep = 0
+$script:TotalSteps = 1
+$script:RunStarted = Get-Date
+$script:UseDynamicProgress = (-not $NoProgress -and -not $Quiet -and -not $env:CI)
+$script:ResolvedLogFile = $LogFile
 
-function Write-Info([string]$Message) {
-    Write-Host "[INFO] $Message" -ForegroundColor Cyan
+function Initialize-InstallerLog {
+    if ([string]::IsNullOrWhiteSpace($script:ResolvedLogFile)) {
+        $logRoot = Join-Path $HOME '.ai-cli-installer\logs'
+        $name = (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log'
+        $script:ResolvedLogFile = Join-Path $logRoot $name
+    }
+    $directory = Split-Path -Parent $script:ResolvedLogFile
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    Set-Content -LiteralPath $script:ResolvedLogFile -Value '' -Encoding UTF8
+    Write-InstallerLog -Level 'INFO' -Message "$($script:ProgramName) v$($script:ProgramVersion)"
 }
 
-function Write-Warn([string]$Message) {
-    Write-Warning $Message
+function Write-InstallerLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Level,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
+    Add-Content -LiteralPath $script:ResolvedLogFile -Value $line -Encoding UTF8
+}
+
+function Write-InstallerMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Level,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [switch]$Always
+    )
+    Write-InstallerLog -Level $Level -Message $Message
+    if ($Quiet -and -not $Always -and $Level -notin @('WARN', 'ERROR', 'SUMMARY')) {
+        return
+    }
+    switch ($Level) {
+        'WARN' { Write-Warning $Message }
+        'ERROR' { Write-Host "[ERROR] $Message" -ForegroundColor Red }
+        'DEBUG' { Write-Host "[DEBUG] $Message" -ForegroundColor DarkGray }
+        'PROGRESS' { Write-Host "[PROGRESS] $Message" -ForegroundColor Cyan }
+        default { Write-Host "[$Level] $Message" }
+    }
+}
+
+function Write-Info([string]$Message) { Write-InstallerMessage -Level 'INFO' -Message $Message }
+function Write-Warn([string]$Message) { Write-InstallerMessage -Level 'WARN' -Message $Message -Always }
+function Write-ErrorMessage([string]$Message) { Write-InstallerMessage -Level 'ERROR' -Message $Message -Always }
+function Write-DebugMessage([string]$Message) {
+    if ($DebugInstaller) { Write-InstallerMessage -Level 'DEBUG' -Message $Message }
+}
+
+function Show-InstallerProgress {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    $script:CurrentStep++
+    if ($script:CurrentStep -gt $script:TotalSteps) { $script:CurrentStep = $script:TotalSteps }
+    $percent = [int](($script:CurrentStep * 100) / $script:TotalSteps)
+    Write-InstallerLog -Level 'PROGRESS' -Message "${percent}% $Message"
+    if ($Quiet) { return }
+    if ($script:UseDynamicProgress) {
+        Write-Progress -Activity $script:ProgramName -Status $Message -PercentComplete $percent
+    }
+    else {
+        Write-InstallerMessage -Level 'PROGRESS' -Message "${percent}% $Message"
+    }
+}
+
+function Complete-InstallerProgress {
+    if ($script:UseDynamicProgress) {
+        Write-Progress -Activity $script:ProgramName -Completed
+    }
 }
 
 function Get-ComponentLabel([string]$Component) {
@@ -63,9 +139,9 @@ function Add-SelectedComponent([string]$Component) {
     }
 }
 
-function ConvertTo-ComponentName([string]$Token) {
-    $normalized = $Token.Trim().ToLowerInvariant()
-    switch ($normalized) {
+function Convert-SelectionToken([string]$Token) {
+    $value = $Token.Trim().ToLowerInvariant()
+    switch ($value) {
         { $_ -in @('1', 'claude', 'claude-code', 'claudecode') } { return 'claude' }
         { $_ -in @('2', 'codex', 'codex-cli', 'codexcli') } { return 'codex' }
         { $_ -in @('3', 'hermes', 'hermes-agent', 'hermesagent') } { return 'hermes' }
@@ -73,383 +149,356 @@ function ConvertTo-ComponentName([string]$Token) {
         { $_ -in @('5', 'all', '*') } { return 'all' }
         { $_ -in @('0', 'exit', 'quit', 'q') } { return 'exit' }
         '' { return '' }
-        default { throw "未知组件: $Token。可选 claude、codex、hermes、cc-switch、all。" }
+        default { throw "未知组件: $Token。可选 claude、codex、hermes、cc-switch、all" }
     }
 }
 
-function Add-SelectionTokens([string[]]$Entries) {
-    foreach ($entry in $Entries) {
-        foreach ($token in ($entry -split '[,\s]+')) {
-            if ([string]::IsNullOrWhiteSpace($token)) {
-                continue
+function Add-Selection([string]$RawSelection) {
+    $tokens = $RawSelection -split '[,\s]+' | Where-Object { $_ }
+    foreach ($token in $tokens) {
+        $normalized = Convert-SelectionToken $token
+        switch ($normalized) {
+            '' { }
+            'exit' { throw [System.OperationCanceledException]::new('用户取消安装') }
+            'all' {
+                Add-SelectedComponent 'claude'
+                Add-SelectedComponent 'codex'
+                Add-SelectedComponent 'hermes'
+                Add-SelectedComponent 'cc-switch'
             }
-            $component = ConvertTo-ComponentName -Token $token
-            switch ($component) {
-                '' { }
-                'exit' { exit 0 }
-                'all' {
-                    Add-SelectedComponent 'claude'
-                    Add-SelectedComponent 'codex'
-                    Add-SelectedComponent 'hermes'
-                    Add-SelectedComponent 'cc-switch'
-                }
-                default { Add-SelectedComponent $component }
-            }
+            default { Add-SelectedComponent $normalized }
         }
     }
 }
 
-function Show-InstallMenu {
-    Write-Host ''
-    Write-Host '请选择要安装的组件（可多选，例如 1,3,4）：' -ForegroundColor Yellow
-    Write-Host '  1) Claude Code'
-    Write-Host '  2) OpenAI Codex CLI'
-    Write-Host '  3) Nous Research Hermes Agent'
-    Write-Host '  4) CC Switch'
-    Write-Host '  5) 全部安装'
-    Write-Host '  0) 退出'
-    return (Read-Host '请输入选择')
-}
-
-function Resolve-ComponentSelection {
+function Resolve-Selection {
     if ($Install.Count -gt 0) {
-        Add-SelectionTokens -Entries $Install
+        Add-Selection ($Install -join ',')
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($env:INSTALLER_TEST_SELECTION)) {
-        Add-SelectionTokens -Entries @($env:INSTALLER_TEST_SELECTION)
-    }
-    elseif (-not $NonInteractive) {
-        Add-SelectionTokens -Entries @(Show-InstallMenu)
+    elseif (-not $NonInteractive -and [Environment]::UserInteractive) {
+        Write-Host ''
+        Write-Host '请选择要安装的组件（可多选，例如 1,3,4）：'
+        Write-Host '  1) Claude Code'
+        Write-Host '  2) OpenAI Codex CLI'
+        Write-Host '  3) Nous Research Hermes Agent'
+        Write-Host '  4) CC Switch'
+        Write-Host '  5) 全部安装'
+        Write-Host '  0) 退出'
+        Add-Selection (Read-Host '请输入选择')
     }
     else {
-        Write-Info '非交互模式未指定组件，使用兼容默认选择: Claude Code + CC Switch'
-        Add-SelectedComponent 'claude'
-        Add-SelectedComponent 'cc-switch'
+        Add-Selection 'claude,cc-switch'
+        Write-Info '未检测到交互终端，使用兼容默认选择: Claude Code + CC Switch'
     }
 
     $filtered = @()
     foreach ($component in $script:SelectedComponents) {
-        $skip = $false
-        switch ($component) {
-            'claude' { $skip = [bool]$SkipClaude }
-            'codex' { $skip = [bool]$SkipCodex }
-            'hermes' { $skip = [bool]$SkipHermes }
-            'cc-switch' { $skip = [bool]$SkipCCSwitch }
-        }
-        if ($skip) {
-            $script:SkippedComponents += (Get-ComponentLabel $component)
-        }
-        else {
-            $filtered += $component
-        }
+        $skip = ($component -eq 'claude' -and $SkipClaude) -or
+                ($component -eq 'codex' -and $SkipCodex) -or
+                ($component -eq 'hermes' -and $SkipHermes) -or
+                ($component -eq 'cc-switch' -and $SkipCCSwitch)
+        if ($skip) { $script:SkippedComponents += (Get-ComponentLabel $component) }
+        else { $filtered += $component }
     }
     $script:SelectedComponents = $filtered
+    if ($script:SelectedComponents.Count -eq 0) { throw '没有可安装组件' }
+}
 
-    if ($script:SelectedComponents.Count -eq 0) {
-        throw '没有可安装组件，请使用 -Install 选择至少一项。'
+function Get-RedactedUrl([string]$Url) {
+    return ($Url -replace '://[^/@]+@', '://***@')
+}
+
+function Get-WebParameters {
+    $parameters = @{
+        UseBasicParsing = $true
+        Headers = @{ 'User-Agent' = "ai-cli-installer/$($script:ProgramVersion)" }
+        TimeoutSec = 1800
     }
+    if ($Proxy) { $parameters['Proxy'] = $Proxy }
+    return $parameters
 }
 
-function Test-ComponentSelected([string]$Component) {
-    return ($script:SelectedComponents -contains $Component)
-}
-
-function Invoke-Step {
+function Invoke-LoggedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
         [Parameter(Mandatory = $true)][scriptblock]$Action
     )
-
     Write-Info $Description
-    if (-not $DryRun) {
-        & $Action
+    Write-InstallerLog -Level 'COMMAND' -Message $Description
+    if ($DryRun) {
+        Write-Info "Dry-run: $Description"
+        return
     }
-}
-
-function Get-WebRequestParameters {
-    $parameters = @{
-        UseBasicParsing = $true
-        Headers = @{ 'User-Agent' = 'ai-cli-installer/2.0' }
+    if ($Quiet) {
+        & $Action *>> $script:ResolvedLogFile
     }
-    if ($Proxy) {
-        $parameters['Proxy'] = $Proxy
+    else {
+        & $Action *>&1 | Tee-Object -FilePath $script:ResolvedLogFile -Append
     }
-    return $parameters
-}
-
-function Get-RestMethodParameters {
-    $parameters = @{
-        Headers = @{ 'User-Agent' = 'ai-cli-installer/2.0' }
-    }
-    if ($Proxy) {
-        $parameters['Proxy'] = $Proxy
-    }
-    return $parameters
 }
 
 function Invoke-Download {
     param(
-        [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [Parameter(Mandatory = $true)][string]$Label
     )
-
-    Write-Info "下载: $Url"
-    if ($DryRun) {
-        return
-    }
-
-    $params = Get-WebRequestParameters
-    $params['Uri'] = $Url
-    $params['OutFile'] = $Destination
-
+    $safeUri = Get-RedactedUrl $Uri
+    Write-Info "下载 ${Label}: $safeUri"
+    Write-InstallerLog -Level 'DOWNLOAD' -Message "url=$safeUri destination=$OutFile"
+    if ($DryRun) { return }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
+    $parameters = Get-WebParameters
+    $parameters['Uri'] = $Uri
+    $parameters['OutFile'] = $OutFile
     $lastError = $null
     for ($attempt = 1; $attempt -le 4; $attempt++) {
         try {
-            Invoke-WebRequest @params
+            if ($script:UseDynamicProgress) {
+                Write-Progress -Activity "下载 $Label" -Status "尝试 $attempt/4" -PercentComplete ([Math]::Min(95, $attempt * 20))
+            }
+            Invoke-WebRequest @parameters | Out-Null
+            if ($script:UseDynamicProgress) { Write-Progress -Activity "下载 $Label" -Completed }
             return
         }
         catch {
             $lastError = $_
-            if ($attempt -lt 4) {
-                Write-Warn "下载失败，第 $attempt 次重试：$($_.Exception.Message)"
-                Start-Sleep -Seconds ([Math]::Min(2 * $attempt, 6))
-            }
+            Write-Warn "下载失败（第 $attempt/4 次）: $($_.Exception.Message)"
+            if ($attempt -lt 4) { Start-Sleep -Seconds ([Math]::Min(8, $attempt * 2)) }
         }
     }
-    throw "下载失败: $Url`n$lastError"
+    throw "下载 $Label 失败: $($lastError.Exception.Message)"
 }
 
-function Test-NetworkUrl([string]$Url) {
-    try {
-        $params = Get-WebRequestParameters
-        $params['Uri'] = $Url
-        $params['Method'] = 'Head'
-        $params['TimeoutSec'] = 15
-        Invoke-WebRequest @params | Out-Null
-    }
-    catch {
-        Write-Warn "无法访问 $Url。可使用 -Proxy；GitHub 下载还可使用 -GitHubProxy。"
-    }
-}
-
-function Test-Network {
-    if ($SkipNetworkCheck -or $DryRun) {
+function Write-FileMetadata {
+    param([string]$Path, [string]$Label)
+    if ($DryRun) {
+        Write-Info "${Label}: Dry-run，跳过本地 SHA-256 计算"
         return
     }
-
-    Write-Info '检查所选组件网络连通性（失败只提示，不绕过地区、账号或服务条款限制）'
-    if (Test-ComponentSelected 'claude') { Test-NetworkUrl 'https://claude.ai' }
-    if (Test-ComponentSelected 'codex') { Test-NetworkUrl 'https://chatgpt.com' }
-    if (Test-ComponentSelected 'hermes') { Test-NetworkUrl 'https://hermes-agent.nousresearch.com' }
-    if (Test-ComponentSelected 'cc-switch') { Test-NetworkUrl 'https://api.github.com' }
+    if (-not (Test-Path -LiteralPath $Path)) { throw "文件不存在: $Path" }
+    $item = Get-Item -LiteralPath $Path
+    $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
+    Write-Info "${Label}: 大小 $($item.Length) bytes；本地 SHA-256 $($hash.Hash)"
+    Write-InstallerLog -Level 'ARTIFACT' -Message "label=$Label path=$Path size=$($item.Length) SHA256=$($hash.Hash)"
 }
 
-function Add-GitHubProxyPrefix([string]$Url) {
-    if ([string]::IsNullOrWhiteSpace($GitHubProxy)) {
-        return $Url
+function Test-ServiceEndpoint([string]$Label, [string]$Uri) {
+    if ($SkipNetworkCheck -or $DryRun) { return }
+    try {
+        $parameters = Get-WebParameters
+        $parameters['Uri'] = $Uri
+        $parameters['Method'] = 'Head'
+        $parameters['TimeoutSec'] = 20
+        Invoke-WebRequest @parameters | Out-Null
+        Write-Info "网络检查通过: $Label"
     }
-    return ($GitHubProxy.TrimEnd('/') + '/' + $Url)
-}
-
-function Get-WindowsArchitecture {
-    $arch = if ($env:INSTALLER_TEST_ARCH) { $env:INSTALLER_TEST_ARCH } else { $env:PROCESSOR_ARCHITECTURE }
-    switch -Regex ($arch) {
-        '^(AMD64|x86_64)$' { return 'x64' }
-        '^(ARM64|arm64|aarch64)$' { return 'arm64' }
-        default { throw "不支持的 CPU 架构: $arch" }
-    }
-}
-
-function Install-ClaudeCode {
-    $installer = Join-Path $TempRoot 'claude-install.ps1'
-    Write-Info "准备从 Anthropic 官方地址安装 Claude Code（通道: $Channel）"
-    Invoke-Download -Url $ClaudeInstallUrl -Destination $installer
-    Invoke-Step -Description "执行官方安装器: $ClaudeInstallUrl $Channel" -Action {
-        & $installer $Channel
+    catch {
+        Write-Warn "无法访问 ${Label}: $Uri；安装阶段仍会按重试策略继续"
     }
 }
 
-function Install-Codex {
-    $installer = Join-Path $TempRoot 'codex-install.ps1'
-    Write-Info '准备从 OpenAI 官方地址安装 Codex CLI'
-    Invoke-Download -Url $CodexInstallUrl -Destination $installer
-    Invoke-Step -Description "执行官方安装器: $CodexInstallUrl" -Action {
-        & $installer
+function Invoke-NetworkChecks {
+    if ($SkipNetworkCheck -or $DryRun) {
+        Write-Info '已跳过网络预检'
+        return
     }
+    if ($script:SelectedComponents -contains 'claude') { Test-ServiceEndpoint 'Claude' 'https://claude.ai' }
+    if ($script:SelectedComponents -contains 'codex') { Test-ServiceEndpoint 'Codex' 'https://chatgpt.com' }
+    if ($script:SelectedComponents -contains 'hermes') { Test-ServiceEndpoint 'Hermes' 'https://hermes-agent.nousresearch.com' }
+    if ($script:SelectedComponents -contains 'cc-switch') { Test-ServiceEndpoint 'GitHub API' 'https://api.github.com' }
 }
 
-function Install-Hermes {
-    $installer = Join-Path $TempRoot 'hermes-install.ps1'
-    Write-Info '准备从 Nous Research 官方地址安装 Hermes Agent'
-    Invoke-Download -Url $HermesInstallUrl -Destination $installer
-    Invoke-Step -Description "执行官方安装器: $HermesInstallUrl" -Action {
-        & $installer
-    }
+function Show-Stage([string]$Component, [string]$Message) {
+    Show-InstallerProgress "$Component`: $Message"
 }
 
-function Get-CCSwitchAssetUrl([string]$Architecture) {
-    if ($env:INSTALLER_FAKE_ASSET_URL) {
-        return $env:INSTALLER_FAKE_ASSET_URL
-    }
-
-    if ($DryRun) {
-        $name = if ($Architecture -eq 'arm64') {
-            'CC-Switch-LATEST-Windows-arm64.msi'
-        }
-        else {
-            'CC-Switch-LATEST-Windows.msi'
-        }
-        return "https://github.com/$CCSwitchRepo/releases/latest/download/$name"
-    }
-
-    $params = Get-RestMethodParameters
-    $params['Uri'] = $GitHubApiUrl
-    $release = Invoke-RestMethod @params
-
-    $pattern = if ($Architecture -eq 'arm64') {
-        'CC-Switch-v.*-Windows.*arm64.*\.msi$'
+function Test-InstalledCommand([string]$CommandName, [string]$Label) {
+    if ($DryRun) { Write-Info "${Label}: Dry-run 验证通过"; return }
+    $command = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if ($command) {
+        $version = & $CommandName --version 2>&1 | Select-Object -First 1
+        Write-Info "${Label}: 已检测到 $version"
     }
     else {
-        'CC-Switch-v.*-Windows(?!.*arm64).*\.msi$'
+        Write-Warn "${Label}: 当前 PowerShell 尚未找到 $CommandName，通常重新打开终端后生效"
+    }
+}
+
+function Install-ScriptComponent {
+    param(
+        [string]$Component,
+        [string]$Label,
+        [string]$Source,
+        [string]$Url,
+        [string]$InstallerPath
+    )
+    Show-Stage $Label '准备官方安装源'
+    Write-Info "$Label 来源: $Source ($Url)"
+    if ($env:INSTALLER_TEST_FAIL_COMPONENT -eq $Component) { throw "$Label 测试注入失败" }
+
+    Show-Stage $Label '下载官方安装器'
+    Invoke-Download -Uri $Url -OutFile $InstallerPath -Label "$Label 安装器"
+
+    Show-Stage $Label '记录安装器信息'
+    Write-FileMetadata -Path $InstallerPath -Label "$Label 安装器"
+
+    Show-Stage $Label '执行安装'
+    Invoke-LoggedCommand -Description "执行 $Label 官方安装器" -Action {
+        if ($Component -eq 'claude') {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $InstallerPath $Channel
+        }
+        else {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $InstallerPath
+        }
+        if ($LASTEXITCODE -ne 0) { throw "$Label 安装器退出码: $LASTEXITCODE" }
     }
 
-    $asset = $release.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+    Show-Stage $Label '验证安装结果'
+    Test-InstalledCommand -CommandName $Component -Label $Label
+}
+
+function Get-CCSwitchAsset {
+    $architecture = if ($env:INSTALLER_TEST_ARCH) { $env:INSTALLER_TEST_ARCH } elseif ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { 'AMD64' }
+    $architecture = if ($architecture -match 'ARM64|AARCH64') { 'arm64' } else { 'x86_64' }
+    if ($DryRun) {
+        return [pscustomobject]@{
+            Name = "CC-Switch-LATEST-Windows-$architecture.msi"
+            Url = "https://github.com/$($script:CCSwitchRepo)/releases/latest/download/CC-Switch-LATEST-Windows-$architecture.msi"
+        }
+    }
+    $parameters = Get-WebParameters
+    $parameters['Uri'] = $script:GitHubApiUrl
+    Write-Info "下载 CC Switch Release metadata: $($script:GitHubApiUrl)"
+    $release = Invoke-RestMethod @parameters
+    $asset = $release.assets | Where-Object { $_.name -match "Windows.*$architecture.*\.msi$|$architecture.*Windows.*\.msi$" } | Select-Object -First 1
     if (-not $asset) {
-        throw "未找到 Windows $Architecture 对应的 CC Switch MSI。"
+        $asset = $release.assets | Where-Object { $_.name -match '\.msi$' -and $_.name -match $architecture } | Select-Object -First 1
     }
+    if (-not $asset) { throw "未找到 Windows $architecture MSI" }
+    if ($asset.browser_download_url -notmatch '^https://(github\.com|objects\.githubusercontent\.com|github-releases\.githubusercontent\.com)/') {
+        throw "Release 返回了非 GitHub 地址: $($asset.browser_download_url)"
+    }
+    return [pscustomobject]@{ Name = $asset.name; Url = $asset.browser_download_url }
+}
 
-    $uri = [Uri]$asset.browser_download_url
-    $allowedHosts = @('github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com')
-    if ($uri.Scheme -ne 'https' -or $allowedHosts -notcontains $uri.Host) {
-        throw "Release 返回了非 GitHub HTTPS 下载地址，已拒绝: $uri"
-    }
-    return $uri.AbsoluteUri
+function Apply-GitHubProxy([string]$Url) {
+    if ([string]::IsNullOrWhiteSpace($GitHubProxy)) { return $Url }
+    return $GitHubProxy.TrimEnd('/') + '/' + $Url
 }
 
 function Install-CCSwitch {
-    $architecture = Get-WindowsArchitecture
-    Write-Info "准备安装 CC Switch（官方仓库: $CCSwitchRepo，架构: $architecture）"
-    $assetUrl = Get-CCSwitchAssetUrl -Architecture $architecture
-    $downloadUrl = Add-GitHubProxyPrefix -Url $assetUrl
-    $msiPath = Join-Path $TempRoot 'cc-switch.msi'
-    Invoke-Download -Url $downloadUrl -Destination $msiPath
+    $label = 'CC Switch'
+    Show-Stage $label '获取官方 Release 信息'
+    Write-Info "$label 来源: $($script:CCSwitchRepo) 官方 GitHub Releases"
+    if ($env:INSTALLER_TEST_FAIL_COMPONENT -eq 'cc-switch') { throw "$label 测试注入失败" }
+    $asset = Get-CCSwitchAsset
+    $msiPath = Join-Path $script:TempRoot $asset.Name
 
-    Invoke-Step -Description "使用 msiexec.exe 安装 CC Switch MSI: $assetUrl" -Action {
-        $uiFlag = if ($NonInteractive) { '/quiet' } else { '/passive' }
-        $arguments = "/i `"$msiPath`" $uiFlag /norestart"
-        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
-        if ($process.ExitCode -notin @(0, 3010)) {
-            throw "CC Switch MSI 安装失败，退出码: $($process.ExitCode)"
-        }
-        if ($process.ExitCode -eq 3010) {
-            Write-Warn '安装成功，但 Windows 建议重启。'
-        }
+    Show-Stage $label '下载 MSI 安装包'
+    Invoke-Download -Uri (Apply-GitHubProxy $asset.Url) -OutFile $msiPath -Label 'CC Switch MSI'
+
+    Show-Stage $label '记录安装包信息'
+    Write-FileMetadata -Path $msiPath -Label 'CC Switch MSI'
+
+    Show-Stage $label '安装 MSI'
+    Invoke-LoggedCommand -Description '使用 Windows Installer 安装 CC Switch' -Action {
+        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$msiPath`"", '/qn', '/norestart') -Wait -PassThru
+        $ExitCode = $process.ExitCode
+        Write-InstallerLog -Level 'MSI' -Message "ExitCode=$ExitCode"
+        if ($ExitCode -notin @(0, 3010)) { throw "msiexec.exe 退出码: $ExitCode" }
+        if ($ExitCode -eq 3010) { Write-Warn 'CC Switch 安装完成，需要重启 Windows' }
     }
+
+    Show-Stage $label '验证安装结果'
+    if ($DryRun) { Write-Info 'CC Switch: Dry-run 验证通过' }
+    else { Write-Info 'CC Switch 安装流程完成，请从开始菜单启动' }
 }
 
 function Invoke-Component([string]$Component) {
+    switch ($Component) {
+        'claude' { Install-ScriptComponent -Component 'claude' -Label 'Claude Code' -Source 'Anthropic 官方安装器' -Url $script:ClaudeInstallUrl -InstallerPath (Join-Path $script:TempRoot 'claude-install.ps1') }
+        'codex' { Install-ScriptComponent -Component 'codex' -Label 'Codex CLI' -Source 'OpenAI 官方安装器' -Url $script:CodexInstallUrl -InstallerPath (Join-Path $script:TempRoot 'codex-install.ps1') }
+        'hermes' { Install-ScriptComponent -Component 'hermes' -Label 'Hermes Agent' -Source 'Nous Research 官方安装器' -Url $script:HermesInstallUrl -InstallerPath (Join-Path $script:TempRoot 'hermes-install.ps1') }
+        'cc-switch' { Install-CCSwitch }
+        default { throw "未知组件: $Component" }
+    }
+}
+
+function Invoke-ComponentSafely([string]$Component) {
     $label = Get-ComponentLabel $Component
-    Write-Host ''
+    $before = $script:CurrentStep
     Write-Info "========== $label =========="
     try {
-        if ($env:INSTALLER_TEST_FAIL_COMPONENT -eq $Component) {
-            throw "测试注入失败: $label"
-        }
-        switch ($Component) {
-            'claude' { Install-ClaudeCode }
-            'codex' { Install-Codex }
-            'hermes' { Install-Hermes }
-            'cc-switch' { Install-CCSwitch }
-            default { throw "内部错误，未知组件: $Component" }
-        }
+        Invoke-Component $Component
         $script:SuccessfulComponents += $label
         Write-Info "$label`: 成功"
     }
     catch {
         $script:FailedComponents += $label
+        $script:FailureDetails += "$label`: $($_.Exception.Message)"
         Write-Warn "$label`: 失败，继续处理其他组件。$($_.Exception.Message)"
     }
-}
-
-function Test-InstallationResult {
-    if ($DryRun) {
-        return
-    }
-    Write-Info '安装结果检查'
-    foreach ($component in $script:SelectedComponents) {
-        switch ($component) {
-            'claude' {
-                if (Get-Command claude -ErrorAction SilentlyContinue) { & claude --version }
-                else { Write-Warn '当前终端还找不到 claude，请重新打开终端。' }
-            }
-            'codex' {
-                if (Get-Command codex -ErrorAction SilentlyContinue) { & codex --version }
-                else { Write-Warn '当前终端还找不到 codex，请重新打开终端。' }
-            }
-            'hermes' {
-                if (Get-Command hermes -ErrorAction SilentlyContinue) { & hermes --version }
-                else { Write-Warn '当前终端还找不到 hermes，请重新打开终端。' }
-            }
-            'cc-switch' { Write-Info 'CC Switch 安装完成后可从开始菜单启动。' }
-        }
+    $completed = $script:CurrentStep - $before
+    while ($completed -lt 5) {
+        Show-InstallerProgress "$label`: 因失败跳过后续阶段"
+        $completed++
     }
 }
 
 function Write-Summary {
-    Write-Host ''
-    Write-Info '========== 安装汇总 =========='
-    if ($script:SuccessfulComponents.Count -gt 0) {
-        Write-Info ('成功: ' + ($script:SuccessfulComponents -join ', '))
-    }
-    if ($script:SkippedComponents.Count -gt 0) {
-        Write-Info ('跳过: ' + ($script:SkippedComponents -join ', '))
-    }
-    if ($script:FailedComponents.Count -gt 0) {
-        Write-Warn ('失败: ' + ($script:FailedComponents -join ', '))
-    }
+    Complete-InstallerProgress
+    $elapsed = [int]((Get-Date) - $script:RunStarted).TotalSeconds
+    Write-InstallerMessage -Level 'SUMMARY' -Message '========== 安装汇总 ==========' -Always
+    if ($script:SuccessfulComponents.Count -gt 0) { Write-InstallerMessage -Level 'SUMMARY' -Message ("成功: " + ($script:SuccessfulComponents -join ', ')) -Always }
+    if ($script:SkippedComponents.Count -gt 0) { Write-InstallerMessage -Level 'SUMMARY' -Message ("跳过: " + ($script:SkippedComponents -join ', ')) -Always }
+    if ($script:FailedComponents.Count -gt 0) { Write-Warn ("失败: " + ($script:FailedComponents -join ', ')) }
+    Write-InstallerMessage -Level 'SUMMARY' -Message "耗时: ${elapsed}s" -Always
+    Write-InstallerMessage -Level 'SUMMARY' -Message "日志: $($script:ResolvedLogFile)" -Always
 }
 
+$exitCode = 0
 try {
-    Write-Info 'Claude Code / Codex / Hermes / CC Switch 安装集合器（Windows）'
-    Write-Info '说明：只使用各项目官方安装源，不绕过地区、账号或服务条款限制。'
-
-    Resolve-ComponentSelection
-
-    if ($Proxy) {
-        $env:HTTP_PROXY = $Proxy
-        $env:HTTPS_PROXY = $Proxy
-        Write-Info "已为当前进程启用代理: $Proxy"
+    Initialize-InstallerLog
+    if (-not $Quiet) {
+        Write-Host "[INFO] $($script:ProgramName) v$($script:ProgramVersion)"
+        Write-Host '[INFO] 官方源安装；不绕过地区、账号或服务条款限制'
     }
-    if ($GitHubProxy) {
-        Write-Warn '已启用用户指定的 GitHub 代理前缀，请确保该服务可信。'
-    }
+    Resolve-Selection
+    $script:TotalSteps = 2 + ($script:SelectedComponents.Count * 5) + 1
+    New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
 
-    if (-not $DryRun) {
-        New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
-    }
+    Show-InstallerProgress '检测 Windows 与 CPU 架构'
+    $arch = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { 'unknown' }
+    Write-Info "检测到: OS=windows ARCH=$arch"
+    Write-InstallerLog -Level 'CONTEXT' -Message "OS=windows ARCH=$arch selected=$($script:SelectedComponents -join ',') dry_run=$DryRun non_interactive=$NonInteractive"
+    Write-DebugMessage "temp_dir=$($script:TempRoot) dynamic_progress=$($script:UseDynamicProgress) proxy_enabled=$(-not [string]::IsNullOrWhiteSpace($Proxy))"
+    if ($GitHubProxy) { Write-Warn '已启用用户指定的 GitHub 下载前缀，请确认该服务可信' }
 
-    Write-Info ('已选择: ' + (($script:SelectedComponents | ForEach-Object { Get-ComponentLabel $_ }) -join ', '))
-    Test-Network
-    foreach ($component in $script:SelectedComponents) {
-        Invoke-Component -Component $component
-    }
-
-    Test-InstallationResult
-    Write-Summary
-    if ($DryRun) {
-        Write-Info 'Dry-run 完成，未修改系统。'
-    }
-
-    if ($script:FailedComponents.Count -gt 0) {
-        exit 1
-    }
+    Show-InstallerProgress '检查所选官方服务的网络连通性'
+    Invoke-NetworkChecks
+    foreach ($component in $script:SelectedComponents) { Invoke-ComponentSafely $component }
+    Show-InstallerProgress '生成安装汇总'
+    if ($script:FailedComponents.Count -gt 0) { $exitCode = 1 }
+}
+catch [System.OperationCanceledException] {
+    $exitCode = 0
+    if ($script:ResolvedLogFile) { Write-InstallerLog -Level 'INFO' -Message '用户取消安装' }
 }
 catch {
-    Write-Error $_
-    exit 1
+    $exitCode = 2
+    if ($script:ResolvedLogFile) { Write-ErrorMessage $_.Exception.Message }
+    else { Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red }
 }
 finally {
-    if (-not $DryRun -and (Test-Path $TempRoot)) {
-        Remove-Item -Path $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($script:ResolvedLogFile) { Write-Summary }
+    if ((Test-Path -LiteralPath $script:TempRoot) -and -not $DebugInstaller) {
+        Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+if ($exitCode -ne 0) {
+    $global:LASTEXITCODE = $exitCode
+    if ($PSCommandPath) { exit $exitCode }
+    throw "安装集合器完成，但存在失败项。ExitCode=$exitCode"
 }

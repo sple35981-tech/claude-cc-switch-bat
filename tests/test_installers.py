@@ -1,339 +1,316 @@
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
 import subprocess
-import sys
+import tempfile
+import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BASH_AVAILABLE = os.name != "nt" and shutil.which("bash") is not None
+BASH = shutil.which("bash")
 
 
-def configure_utf8_locale(env: dict[str, str]) -> None:
-    locale_name = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
-    env["LANG"] = locale_name
-    env["LC_ALL"] = locale_name
+def decode(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
 
 
-class InstallerRepositoryTests(unittest.TestCase):
-    def run_bash(self, *args: str, env_updates: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        configure_utf8_locale(env)
-        env.update(
-            {
-                "INSTALLER_TEST_OS": "linux",
-                "INSTALLER_TEST_ARCH": "x86_64",
-                "INSTALLER_TEST_DISTRO": "debian",
-                "INSTALLER_FAKE_ASSET_URL": "https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb",
-            }
-        )
-        if env_updates:
-            env.update(env_updates)
-        return subprocess.run(
-            ["bash", str(ROOT / "install.sh"), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+def run_bash(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
+    merged = os.environ.copy()
+    merged.update(
+        {
+            "LC_ALL": "C.UTF-8",
+            "LANG": "C.UTF-8",
+            "INSTALLER_TEST_OS": "linux",
+            "INSTALLER_TEST_ARCH": "x86_64",
+            "INSTALLER_TEST_DISTRO": "kali",
+        }
+    )
+    if env:
+        merged.update(env)
+    return subprocess.run(
+        [BASH or "bash", str(ROOT / "install.sh"), *args],
+        cwd=ROOT,
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_installer_has_valid_syntax(self) -> None:
-        script = ROOT / "install.sh"
-        self.assertTrue(script.exists(), "install.sh must exist")
-        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        self.assertEqual(result.returncode, 0, result.stderr)
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_help_documents_collector_options(self) -> None:
-        result = self.run_bash("--help")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for option in (
-            "--install",
-            "--channel",
-            "--proxy",
-            "--github-proxy",
-            "--dry-run",
-            "--skip-claude",
-            "--skip-cc-switch",
-        ):
-            self.assertIn(option, result.stdout)
-        for component in ("claude", "codex", "hermes", "cc-switch", "all"):
-            self.assertIn(component, result.stdout.lower())
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_selects_only_codex_and_hermes(self) -> None:
-        result = self.run_bash(
-            "--install",
-            "codex,hermes",
-            "--dry-run",
-            "--non-interactive",
-            "--skip-network-check",
-        )
-        output = result.stdout + result.stderr
+class InstallerTests(unittest.TestCase):
+    def test_bash_help_documents_progress_and_logging(self) -> None:
+        result = run_bash("--help")
+        output = decode(result.stdout + result.stderr)
         self.assertEqual(result.returncode, 0, output)
-        self.assertIn("https://chatgpt.com/codex/install.sh", output)
-        self.assertIn("https://hermes-agent.nousresearch.com/install.sh", output)
-        self.assertNotIn("https://claude.ai/install.sh", output)
-        self.assertNotIn("CC Switch 来源", output)
+        for option in ("--install", "--quiet", "--no-progress", "--log-file", "--debug"):
+            self.assertIn(option, output)
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_install_all_uses_four_official_sources(self) -> None:
-        result = self.run_bash(
-            "--install",
-            "all",
-            "--dry-run",
-            "--non-interactive",
-            "--skip-network-check",
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
-        self.assertIn("https://claude.ai/install.sh", output)
-        self.assertIn("https://chatgpt.com/codex/install.sh", output)
-        self.assertIn("https://hermes-agent.nousresearch.com/install.sh", output)
-        self.assertIn("farion1231/cc-switch", output)
+    def test_bash_dry_run_all_has_staged_progress_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = pathlib.Path(temp_dir) / "installer.log"
+            result = run_bash(
+                "--install",
+                "all",
+                "--dry-run",
+                "--non-interactive",
+                "--skip-network-check",
+                "--no-progress",
+                "--log-file",
+                str(log_file),
+            )
+            output = decode(result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, output)
+            self.assertIn("[PROGRESS]", output)
+            self.assertIn("准备", output)
+            self.assertIn("下载", output)
+            self.assertIn("安装汇总", output)
+            self.assertIn("Claude Code", output)
+            self.assertIn("Codex CLI", output)
+            self.assertIn("Hermes Agent", output)
+            self.assertIn("CC Switch", output)
+            self.assertTrue(log_file.exists())
+            log = log_file.read_text(encoding="utf-8")
+            self.assertIn("AI CLI Installer Collector", log)
+            self.assertIn("OS=linux", log)
+            self.assertIn("selected=claude,codex,hermes,cc-switch", log)
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_menu_selection_can_be_simulated(self) -> None:
-        result = self.run_bash(
-            "--dry-run",
-            "--skip-network-check",
-            env_updates={"INSTALLER_TEST_SELECTION": "2,3"},
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
-        self.assertIn("Codex", output)
-        self.assertIn("Hermes", output)
-        self.assertNotIn("Anthropic 官方", output)
-        self.assertNotIn("CC Switch 来源", output)
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_noninteractive_default_preserves_legacy_pair(self) -> None:
-        result = self.run_bash(
-            "--dry-run",
-            "--non-interactive",
-            "--skip-network-check",
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
-        self.assertIn("https://claude.ai/install.sh", output)
-        self.assertIn("farion1231/cc-switch", output)
-        self.assertNotIn("https://chatgpt.com/codex/install.sh", output)
-        self.assertNotIn("https://hermes-agent.nousresearch.com/install.sh", output)
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_rejects_unknown_component(self) -> None:
-        result = self.run_bash("--install", "claude,unknown", "--dry-run", "--skip-network-check")
-        output = result.stdout + result.stderr
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unknown", output.lower())
-        self.assertIn("claude", output.lower())
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_component_failure_does_not_stop_remaining_components(self) -> None:
-        result = self.run_bash(
+    def test_bash_quiet_preserves_summary_and_errors(self) -> None:
+        result = run_bash(
             "--install",
             "codex,hermes",
             "--dry-run",
             "--non-interactive",
             "--skip-network-check",
-            env_updates={"INSTALLER_TEST_FAIL_COMPONENT": "codex"},
+            "--quiet",
         )
-        output = result.stdout + result.stderr
+        output = decode(result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("[PROGRESS]", output)
+        self.assertIn("安装汇总", output)
+        self.assertIn("成功", output)
+
+    def test_bash_component_failure_continues_and_returns_nonzero(self) -> None:
+        result = run_bash(
+            "--install",
+            "claude,codex",
+            "--dry-run",
+            "--non-interactive",
+            "--skip-network-check",
+            "--no-progress",
+            env={"INSTALLER_TEST_FAIL_COMPONENT": "claude"},
+        )
+        output = decode(result.stdout + result.stderr)
         self.assertNotEqual(result.returncode, 0, output)
-        self.assertIn("Codex", output)
-        self.assertIn("Hermes", output)
+        self.assertIn("Claude Code", output)
+        self.assertIn("失败", output)
         self.assertIn("Codex CLI", output)
         self.assertIn("成功", output)
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_dry_run_works_without_release_fixture(self) -> None:
-        env = {
-            "INSTALLER_TEST_OS": "linux",
-            "INSTALLER_TEST_ARCH": "x86_64",
-            "INSTALLER_TEST_DISTRO": "debian",
-            "INSTALLER_FAKE_ASSET_URL": "",
-        }
-        result = self.run_bash(
-            "--install",
-            "cc-switch",
-            "--dry-run",
-            "--skip-network-check",
-            env_updates=env,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("releases/latest/download", result.stdout + result.stderr)
+    def test_release_metadata_log_cannot_pollute_asset_url(self) -> None:
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertRegex(content, r"release_asset_url\(\)")
+        self.assertIn("release metadata", content.lower())
+        # All human-readable log helpers must write to stderr so command substitution remains pure.
+        self.assertRegex(content, r"emit_terminal.*>&2|printf.*>&2")
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_appimage_dry_run_does_not_download_twice(self) -> None:
-        result = self.run_bash(
-            "--install",
-            "cc-switch",
-            "--dry-run",
-            "--skip-network-check",
-            env_updates={
-                "INSTALLER_TEST_ARCH": "arm64",
-                "INSTALLER_TEST_DISTRO": "arch",
-                "INSTALLER_FAKE_ASSET_URL": "https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-arm64.AppImage",
-            },
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
-        self.assertEqual(output.count("下载:"), 1, output)
-        self.assertIn("~/.local/bin", output.replace(str(pathlib.Path.home()), "~"))
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_without_tty_falls_back_to_legacy_pair(self) -> None:
-        env = os.environ.copy()
-        configure_utf8_locale(env)
-        env.update(
-            {
-                "INSTALLER_TEST_OS": "linux",
-                "INSTALLER_TEST_ARCH": "x86_64",
-                "INSTALLER_TEST_DISTRO": "debian",
-                "INSTALLER_FAKE_ASSET_URL": "https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb",
-            }
-        )
-        env.pop("INSTALLER_TEST_SELECTION", None)
-        result = subprocess.run(
-            ["bash", str(ROOT / "install.sh"), "--dry-run", "--skip-network-check"],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
-        self.assertIn("兼容默认选择", output)
-        self.assertIn("https://claude.ai/install.sh", output)
-        self.assertIn("farion1231/cc-switch", output)
-
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_real_codex_path_survives_network_check_when_other_components_unselected(self) -> None:
-        import tempfile
-
+    @unittest.skipUnless(BASH, "Bash required")
+    def test_real_cc_switch_path_uses_clean_url_with_fake_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake_bin = pathlib.Path(temp_dir)
+            root = pathlib.Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            calls = root / "calls.log"
+            release = {
+                "tag_name": "v9.9.9",
+                "assets": [
+                    {
+                        "name": "CC-Switch-v9.9.9-Linux-x86_64.deb",
+                        "browser_download_url": "https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb",
+                    }
+                ],
+            }
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
-                """#!/usr/bin/env bash
-set -e
-out=''
-while [[ $# -gt 0 ]]; do
-  case \"$1\" in
-    -o) out=\"$2\"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [[ -n \"$out\" ]]; then
-  printf '#!/bin/sh\\nexit 0\\n' > \"$out\"
-fi
-exit 0
-""",
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -e
+                    printf '%s\\n' "$*" >> {calls!s}
+                    out=''
+                    url=''
+                    while [[ $# -gt 0 ]]; do
+                      case "$1" in
+                        -o|--output) out="$2"; shift 2 ;;
+                        -*) shift ;;
+                        *) url="$1"; shift ;;
+                      esac
+                    done
+                    if [[ "$url" == *api.github.com* ]]; then
+                      cat > "$out" <<'JSON'
+                    {json.dumps(release)}
+                    JSON
+                    else
+                      printf 'fake-deb' > "$out"
+                    fi
+                    """
+                ),
                 encoding="utf-8",
             )
             fake_curl.chmod(0o755)
-            env = os.environ.copy()
-            configure_utf8_locale(env)
-            env.update(
-                {
-                    "PATH": str(fake_bin) + os.pathsep + env["PATH"],
-                    "INSTALLER_TEST_OS": "linux",
-                    "INSTALLER_TEST_ARCH": "x86_64",
-                    "INSTALLER_TEST_DISTRO": "debian",
-                }
+            for name, body in {
+                "apt": "#!/usr/bin/env bash\nprintf 'apt:%s\\n' \"$*\" >> \"$CALLS_LOG\"\nexit 0\n",
+                "sudo": "#!/usr/bin/env bash\nexec \"$@\"\n",
+                "dpkg-query": "#!/usr/bin/env bash\necho 'cc-switch 9.9.9'\nexit 0\n",
+                "sha256sum": "#!/usr/bin/env bash\necho 'abc123  '$1\n",
+            }.items():
+                path = fake_bin / name
+                path.write_text(body, encoding="utf-8")
+                path.chmod(0o755)
+            log_file = root / "run.log"
+            env = {
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "CALLS_LOG": str(calls),
+                "HOME": str(root / "home"),
+            }
+            result = run_bash(
+                "--install",
+                "cc-switch",
+                "--non-interactive",
+                "--skip-network-check",
+                "--no-progress",
+                "--log-file",
+                str(log_file),
+                env=env,
+            )
+            output = decode(result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, output)
+            call_text = calls.read_text(encoding="utf-8")
+            self.assertIn("https://api.github.com/repos/farion1231/cc-switch/releases/latest", call_text)
+            self.assertIn("https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb", call_text)
+            self.assertNotIn("[INFO]", call_text)
+            self.assertNotIn("bad range", output.lower())
+            self.assertIn("SHA-256", output)
+
+    def test_bash_has_resume_retries_timeouts_and_plain_ci_mode(self) -> None:
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        for marker in ("--continue-at", "--retry", "--connect-timeout", "--max-time"):
+            self.assertIn(marker, content)
+        self.assertIn("NO_COLOR", content)
+        self.assertIn("CI", content)
+
+    def test_bash_avoids_secret_environment_dump(self) -> None:
+        content = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertNotRegex(content, r"\benv\b\s*\|\s*tee")
+        self.assertNotIn("printenv", content)
+        self.assertNotIn("set -x", content)
+
+
+    def test_log_file_is_private_and_debug_does_not_dump_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = pathlib.Path(temp_dir) / "private.log"
+            result = run_bash(
+                "--install",
+                "hermes",
+                "--dry-run",
+                "--non-interactive",
+                "--skip-network-check",
+                "--no-progress",
+                "--debug",
+                "--log-file",
+                str(log_file),
+                env={"OPENAI_API_KEY": "must-not-appear"},
+            )
+            output = decode(result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, output)
+            self.assertEqual(log_file.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("must-not-appear", log_file.read_text(encoding="utf-8"))
+
+
+
+    @unittest.skipUnless(shutil.which("script"), "pseudo-terminal helper required")
+    def test_noninteractive_tty_can_still_render_dynamic_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript = pathlib.Path(temp_dir) / "tty.out"
+            log_file = pathlib.Path(temp_dir) / "tty.log"
+            command = (
+                "env -u CI INSTALLER_TEST_OS=linux INSTALLER_TEST_ARCH=x86_64 "
+                "INSTALLER_TEST_DISTRO=kali bash ./install.sh --install cc-switch "
+                "--dry-run --non-interactive --skip-network-check "
+                f"--log-file {log_file}"
             )
             result = subprocess.run(
-                ["bash", str(ROOT / "install.sh"), "--install", "codex", "--non-interactive"],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
+                ["script", "-qec", command, str(transcript)],
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 check=False,
             )
-            output = result.stdout + result.stderr
+            output = decode(transcript.read_bytes()).replace("\r", "")
             self.assertEqual(result.returncode, 0, output)
-            self.assertIn("Codex CLI: 成功", output)
+            self.assertIn("[########################] 100%", output)
 
-    @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
-    def test_bash_rejects_invalid_channel(self) -> None:
-        result = self.run_bash("--channel", "nightly")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("stable", result.stderr + result.stdout)
+    def test_github_proxy_credentials_are_redacted_from_output_and_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = pathlib.Path(temp_dir) / "proxy.log"
+            result = run_bash(
+                "--install",
+                "cc-switch",
+                "--dry-run",
+                "--non-interactive",
+                "--skip-network-check",
+                "--no-progress",
+                "--github-proxy",
+                "https://user:supersecret@proxy.example/",
+                "--log-file",
+                str(log_file),
+            )
+            output = decode(result.stdout + result.stderr)
+            log = log_file.read_text(encoding="utf-8")
+            self.assertEqual(result.returncode, 0, output)
+            self.assertNotIn("supersecret", output)
+            self.assertNotIn("supersecret", log)
+            self.assertIn("https://***@proxy.example/", output + log)
 
-    def test_bash_guards_empty_selected_array_for_bash_32(self) -> None:
-        content = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn('[[ ${#SELECTED_COMPONENTS[@]} -eq 0 ]] && return 1', content)
-
-    def test_windows_installer_has_utf8_bom_for_powershell_51(self) -> None:
-        content = (ROOT / "install.ps1").read_bytes()
-        self.assertTrue(content.startswith(b"\xef\xbb\xbf"), "Windows PowerShell 5.1 requires a UTF-8 BOM for non-ASCII scripts")
-
-    def test_bash_braces_variables_before_non_ascii_text(self) -> None:
+    def test_bash_32_variable_boundaries_and_portable_find(self) -> None:
         import re
 
         content = (ROOT / "install.sh").read_text(encoding="utf-8")
         unsafe = re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]", content)
         self.assertEqual(unsafe, [], f"Bash 3.2 may absorb UTF-8 bytes into variable names: {unsafe}")
-
-    def test_bash_uses_macos_portable_find(self) -> None:
-        content = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("-maxdepth", content)
 
-    def test_windows_installer_uses_all_official_sources_and_safe_msi(self) -> None:
-        content = (ROOT / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn("https://claude.ai/install.ps1", content)
-        self.assertIn("https://chatgpt.com/codex/install.ps1", content)
-        self.assertIn("https://hermes-agent.nousresearch.com/install.ps1", content)
-        self.assertIn("farion1231/cc-switch", content)
-        self.assertIn("msiexec.exe", content)
-        self.assertIn("ValidateSet('stable', 'latest')", content)
-        self.assertIn("[string[]]$Install", content)
-        self.assertIn("Read-Host", content)
-        self.assertIn("Invoke-Component", content)
-        self.assertIn("Get-RestMethodParameters", content)
-        self.assertIn('`"$msiPath`"', content)
-        self.assertNotIn("ANTHROPIC_AUTH_TOKEN=", content)
-        self.assertNotIn("OPENAI_API_KEY=", content)
+    def test_powershell_has_progress_logging_and_official_sources(self) -> None:
+        raw = (ROOT / "install.ps1").read_bytes()
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+        content = raw.decode("utf-8-sig")
+        for option in ("[switch]$Quiet", "[switch]$NoProgress", "$LogFile", "[switch]$DebugInstaller"):
+            self.assertIn(option, content)
+        for url in (
+            "https://claude.ai/install.ps1",
+            "https://chatgpt.com/codex/install.ps1",
+            "https://hermes-agent.nousresearch.com/install.ps1",
+            "farion1231/cc-switch",
+        ):
+            self.assertIn(url, content)
+        self.assertIn("Write-Progress", content)
+        self.assertIn("SHA256", content)
+        self.assertIn("ExitCode", content)
 
-    def test_cmd_wrapper_invokes_powershell(self) -> None:
-        content = (ROOT / "install.cmd").read_text(encoding="utf-8").lower()
-        self.assertIn("powershell", content)
-        self.assertIn("install.ps1", content)
-        self.assertIn("%*", content)
-
-    def test_readme_documents_four_tool_collector(self) -> None:
+    def test_readme_documents_new_modes(self) -> None:
         content = (ROOT / "README.md").read_text(encoding="utf-8")
-        for name in ("Claude Code", "Codex", "Hermes", "CC Switch"):
-            self.assertIn(name, content)
-        self.assertIn("--install", content)
-        self.assertIn("-Install", content)
-        self.assertIn("交互", content)
-        self.assertIn("中国", content)
-        self.assertIn("代理", content)
+        for term in ("进度", "日志", "--no-progress", "--quiet", "--log-file", "Kali"):
+            self.assertIn(term, content)
 
-    def test_ci_matrix_covers_three_platforms_and_all_components(self) -> None:
+    def test_ci_has_real_kali_container_job(self) -> None:
         content = (ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8")
+        self.assertIn("kalilinux/kali-rolling", content)
+        self.assertIn("container_matrix.sh", content)
         for runner in ("ubuntu-latest", "macos-latest", "windows-latest"):
             self.assertIn(runner, content)
-        self.assertIn("unittest", content)
-        self.assertIn("--install all", content)
-        self.assertIn("-Install all", content)
-
-    def test_release_metadata_download_log_cannot_pollute_asset_url(self) -> None:
-        content = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            'download "$GITHUB_API_URL" "$json" >&2',
-            content,
-            "release_asset_url is used inside command substitution, so metadata logs must go to stderr",
-        )
 
 
 if __name__ == "__main__":

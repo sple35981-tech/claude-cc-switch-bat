@@ -1,13 +1,19 @@
 # Claude Code / Codex / Hermes / CC Switch Installer Collector
 
-A selectable installer for Windows, macOS, Linux, Kali, and WSL. It installs any combination of:
+A selectable installer for Windows, macOS, Linux, Kali, and WSL. It installs Claude Code, OpenAI Codex CLI, Nous Research Hermes Agent, and CC Switch from their official sources.
 
-- Claude Code from Anthropic's official installer.
-- OpenAI Codex CLI from OpenAI's official installer.
-- Hermes Agent from Nous Research's official installer.
-- CC Switch from the official `farion1231/cc-switch` GitHub releases.
+## Highlights
 
-## Interactive installation
+- Interactive overall progress with stable line output in CI or redirected terminals.
+- Five stages per component: prepare, download, record local SHA-256, install, and verify.
+- UTF-8 logs under `~/.ai-cli-installer/logs/` by default.
+- Bash downloads use retries, timeouts, and partial-file continuation.
+- Component failures are isolated; the final process exits non-zero if any selected item failed.
+- No bundled proxy, shared account, token, API key, or region bypass.
+
+A locally calculated SHA-256 is recorded for troubleshooting. It is not presented as upstream signature verification unless the upstream project publishes a trusted checksum.
+
+## Interactive install
 
 Windows PowerShell:
 
@@ -15,52 +21,42 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.ps1 | iex
 ```
 
-macOS / Linux / WSL:
+macOS / Linux / Kali / WSL:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.sh | bash
 ```
 
-Select multiple entries such as `1,3,4`, or choose `5` for all tools.
-
-## Explicit selection
-
-```powershell
-.\install.ps1 -Install codex,hermes
-.\install.ps1 -Install all
-```
+## Direct selection
 
 ```bash
 ./install.sh --install codex,hermes
-./install.sh --install all
+./install.sh --install all --no-progress --log-file ~/ai-cli-install.log
 ```
-
-Valid names are `claude`, `codex`, `hermes`, `cc-switch`, and `all`.
-
-In a non-interactive environment with no explicit selection, the legacy default remains Claude Code plus CC Switch. For CI and servers, explicitly pass `--install` or `-Install`.
-
-## Proxy examples
 
 ```powershell
-.\install.ps1 -Install all -Proxy http://127.0.0.1:7890
+.\install.ps1 -Install codex,hermes
+.\install.ps1 -Install all -NoProgress -LogFile "$HOME\ai-cli-install.log"
 ```
+
+Supported names: `claude,codex,hermes,cc-switch,all`.
+
+## Output controls
+
+| Purpose | Bash | PowerShell |
+|---|---|---|
+| Disable dynamic progress | `--no-progress` | `-NoProgress` |
+| Quiet mode | `--quiet` | `-Quiet` |
+| Custom log | `--log-file PATH` | `-LogFile PATH` |
+| Debug diagnostics | `--debug` | `-DebugInstaller` |
+| Audit only | `--dry-run` | `-DryRun` |
+
+## Validation
 
 ```bash
-./install.sh --install all --proxy http://127.0.0.1:7890
+python3 -m unittest discover -s tests -v
+bash -n install.sh
+bash tests/container_matrix.sh
 ```
 
-A custom GitHub download prefix only affects CC Switch releases and is never enabled by default.
-
-## Dry run
-
-```powershell
-.\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
-```
-
-```bash
-./install.sh --install all --dry-run --non-interactive --skip-network-check
-```
-
-Each component is isolated: one failure does not prevent the remaining selected components from being attempted. The installer prints a final success/failure summary and returns a non-zero status if any selected component failed.
-
-The scripts do not embed API keys, shared accounts, unofficial relays, or default mirrors, and they do not bypass regional availability or service terms.
+GitHub Actions validates Ubuntu, macOS, Windows PowerShell 5.1, and a real `kalilinux/kali-rolling` container.
