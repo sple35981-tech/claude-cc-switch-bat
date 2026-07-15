@@ -35,18 +35,17 @@ jobs:
         if: runner.os != 'Windows'
         run: bash -n install.sh
 
-      - name: Bash dry run
+      - name: Bash all-components dry run
         if: runner.os != 'Windows'
         shell: bash
         env:
           INSTALLER_TEST_OS: linux
           INSTALLER_TEST_ARCH: x86_64
           INSTALLER_TEST_DISTRO: debian
-          INSTALLER_FAKE_RELEASE_TAG: v9.9.9
           INSTALLER_FAKE_ASSET_URL: https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb
-        run: bash install.sh --dry-run --non-interactive --skip-network-check
+        run: bash install.sh --install all --dry-run --non-interactive --skip-network-check
 
-      - name: Validate PowerShell syntax and dry run
+      - name: Validate PowerShell syntax and all-components dry run
         if: runner.os == 'Windows'
         shell: powershell
         run: |
@@ -63,4 +62,4 @@ jobs:
           }
           $env:INSTALLER_TEST_ARCH = 'AMD64'
           $env:INSTALLER_FAKE_ASSET_URL = 'https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Windows.msi'
-          .\install.ps1 -DryRun -NonInteractive -SkipNetworkCheck
+          .\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
