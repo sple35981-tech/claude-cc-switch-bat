@@ -76,6 +76,10 @@ EOF
 esac
 ''',
     )
+    write_exe(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
     for cmd in ("apt", "dpkg", "dnf", "yum", "zypper", "rpm"):
         write_exe(
             fake_bin / cmd,
