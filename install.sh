@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROGRAM_NAME="Claude Code + CC Switch Installer"
+PROGRAM_NAME="AI CLI Installer Collector"
 CC_SWITCH_REPO="farion1231/cc-switch"
 CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
+CODEX_INSTALL_URL="https://chatgpt.com/codex/install.sh"
+HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 GITHUB_API_URL="https://api.github.com/repos/${CC_SWITCH_REPO}/releases/latest"
 CHANNEL="stable"
 PROXY_URL=""
 GITHUB_PROXY=""
+RAW_SELECTION=""
 SKIP_CLAUDE=0
+SKIP_CODEX=0
+SKIP_HERMES=0
 SKIP_CC_SWITCH=0
 DRY_RUN=0
 NON_INTERACTIVE=0
 SKIP_NETWORK_CHECK=0
 TMP_DIR=""
+SELECTED_COMPONENTS=()
+SUCCEEDED_COMPONENTS=()
+FAILED_COMPONENTS=()
+SKIPPED_COMPONENTS=()
 
 log() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -21,33 +30,47 @@ die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Claude Code + CC Switch 跨平台一键安装器
+Claude Code / Codex / Hermes / CC Switch 跨平台安装集合器
 
 用法:
   ./install.sh [选项]
 
+组件:
+  claude       Claude Code
+  codex        OpenAI Codex CLI
+  hermes       Nous Research Hermes Agent
+  cc-switch    CC Switch 桌面配置管理器
+  all          安装以上全部组件
+
 选项:
+  --install LIST            选择组件，逗号分隔，例如 codex,hermes 或 all
   --channel stable|latest   Claude Code 更新通道，默认 stable
   --proxy URL               为当前安装过程设置 HTTP/HTTPS 代理
-  --github-proxy URL        为 GitHub 下载显式添加代理前缀
-  --skip-claude             跳过 Claude Code
-  --skip-cc-switch          跳过 CC Switch
+  --github-proxy URL        为 GitHub Release 下载显式添加代理前缀
+  --skip-claude             从选择中移除 Claude Code（兼容旧参数）
+  --skip-codex              从选择中移除 Codex
+  --skip-hermes             从选择中移除 Hermes
+  --skip-cc-switch          从选择中移除 CC Switch（兼容旧参数）
   --dry-run                 仅显示将执行的操作，不下载或安装
-  --non-interactive         非交互模式
+  --non-interactive         禁用菜单；未选择时默认 Claude Code + CC Switch
   --skip-network-check      跳过安装前网络诊断
   -h, --help                显示帮助
 
 示例:
-  ./install.sh
-  ./install.sh --channel latest
+  ./install.sh                         # 有终端时显示选择菜单
+  ./install.sh --install all
+  ./install.sh --install codex,hermes
+  ./install.sh --install claude --channel latest
   ./install.sh --proxy http://127.0.0.1:7890
-  ./install.sh --github-proxy https://your-trusted-proxy.example/
-  ./install.sh --dry-run --skip-network-check
+  ./install.sh --dry-run --install all --skip-network-check
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --install)
+      [[ $# -ge 2 ]] || die "--install 缺少组件列表"
+      RAW_SELECTION="$2"; shift 2 ;;
     --channel)
       [[ $# -ge 2 ]] || die "--channel 缺少参数，可选 stable 或 latest"
       CHANNEL="$2"; shift 2 ;;
@@ -58,6 +81,8 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--github-proxy 缺少 URL"
       GITHUB_PROXY="$2"; shift 2 ;;
     --skip-claude) SKIP_CLAUDE=1; shift ;;
+    --skip-codex) SKIP_CODEX=1; shift ;;
+    --skip-hermes) SKIP_HERMES=1; shift ;;
     --skip-cc-switch) SKIP_CC_SWITCH=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
@@ -68,7 +93,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$CHANNEL" == "stable" || "$CHANNEL" == "latest" ]] || die "--channel 只支持 stable 或 latest"
-[[ $SKIP_CLAUDE -eq 0 || $SKIP_CC_SWITCH -eq 0 ]] || die "Claude Code 和 CC Switch 不能同时跳过"
 
 if [[ -n "$PROXY_URL" ]]; then
   export HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL"
@@ -117,6 +141,123 @@ as_root() {
   fi
 }
 
+contains_component() {
+  local wanted="$1" item
+  [[ ${#SELECTED_COMPONENTS[@]} -eq 0 ]] && return 1
+  for item in "${SELECTED_COMPONENTS[@]}"; do
+    [[ "$item" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+append_unique_component() {
+  local component="$1"
+  if ! contains_component "$component"; then
+    SELECTED_COMPONENTS+=("$component")
+  fi
+}
+
+component_label() {
+  case "$1" in
+    claude) printf 'Claude Code' ;;
+    codex) printf 'Codex CLI' ;;
+    hermes) printf 'Hermes Agent' ;;
+    cc-switch) printf 'CC Switch' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+normalize_selection_token() {
+  local token="$1"
+  token="$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$token" in
+    1|claude|claude-code|claudecode) printf 'claude' ;;
+    2|codex|codex-cli|codexcli) printf 'codex' ;;
+    3|hermes|hermes-agent|hermesagent) printf 'hermes' ;;
+    4|cc-switch|ccswitch|cc_switch) printf 'cc-switch' ;;
+    5|all|'*') printf 'all' ;;
+    0|exit|quit|q) printf 'exit' ;;
+    '') printf '' ;;
+    *) die "未知组件: ${token}。可选 claude、codex、hermes、cc-switch、all" ;;
+  esac
+}
+
+parse_selection() {
+  local raw="$1" normalized token old_ifs
+  raw="${raw// /,}"
+  old_ifs="$IFS"
+  IFS=','
+  # shellcheck disable=SC2206
+  local tokens=( $raw )
+  IFS="$old_ifs"
+
+  for token in "${tokens[@]}"; do
+    normalized="$(normalize_selection_token "$token")"
+    case "$normalized" in
+      '') ;;
+      exit) exit 0 ;;
+      all)
+        append_unique_component claude
+        append_unique_component codex
+        append_unique_component hermes
+        append_unique_component cc-switch
+        ;;
+      *) append_unique_component "$normalized" ;;
+    esac
+  done
+}
+
+has_interactive_tty() {
+  [[ -t 0 || -t 1 || -t 2 ]] && [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+show_menu_and_read_selection() {
+  local selection=""
+  cat >/dev/tty <<'EOF'
+
+请选择要安装的组件（可多选，例如 1,3,4）：
+  1) Claude Code
+  2) OpenAI Codex CLI
+  3) Nous Research Hermes Agent
+  4) CC Switch
+  5) 全部安装
+  0) 退出
+EOF
+  printf '请输入选择: ' >/dev/tty
+  IFS= read -r selection </dev/tty || die "无法读取选择"
+  printf '%s' "$selection"
+}
+
+remove_skipped_components() {
+  local filtered=() item
+  for item in "${SELECTED_COMPONENTS[@]}"; do
+    case "$item" in
+      claude) [[ $SKIP_CLAUDE -eq 1 ]] && { SKIPPED_COMPONENTS+=("Claude Code"); continue; } ;;
+      codex) [[ $SKIP_CODEX -eq 1 ]] && { SKIPPED_COMPONENTS+=("Codex CLI"); continue; } ;;
+      hermes) [[ $SKIP_HERMES -eq 1 ]] && { SKIPPED_COMPONENTS+=("Hermes Agent"); continue; } ;;
+      cc-switch) [[ $SKIP_CC_SWITCH -eq 1 ]] && { SKIPPED_COMPONENTS+=("CC Switch"); continue; } ;;
+    esac
+    filtered+=("$item")
+  done
+  SELECTED_COMPONENTS=("${filtered[@]}")
+}
+
+resolve_selection() {
+  local selection="$RAW_SELECTION"
+  if [[ -z "$selection" && -n "${INSTALLER_TEST_SELECTION:-}" ]]; then
+    selection="$INSTALLER_TEST_SELECTION"
+  elif [[ -z "$selection" && $NON_INTERACTIVE -eq 0 ]] && has_interactive_tty; then
+    selection="$(show_menu_and_read_selection)"
+  elif [[ -z "$selection" ]]; then
+    selection="claude,cc-switch"
+    log "未检测到交互终端，使用兼容默认选择: Claude Code + CC Switch"
+  fi
+
+  parse_selection "$selection"
+  remove_skipped_components
+  [[ ${#SELECTED_COMPONENTS[@]} -gt 0 ]] || die "没有可安装组件，请使用 --install 选择至少一项"
+}
+
 apply_github_proxy() {
   local url="$1"
   if [[ -z "$GITHUB_PROXY" ]]; then
@@ -135,26 +276,32 @@ download() {
   if command -v curl >/dev/null 2>&1; then
     curl --fail --location --silent --show-error \
       --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 900 \
-      --user-agent "cc-switch-installer/1.0" \
+      --user-agent "ai-cli-installer/2.0" \
       -o "$dest" "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget --tries=4 --timeout=30 --user-agent="cc-switch-installer/1.0" -O "$dest" "$url"
+    wget --tries=4 --timeout=30 --user-agent="ai-cli-installer/2.0" -O "$dest" "$url"
   else
     die "需要 curl 或 wget 才能下载文件"
   fi
 }
 
+network_check_url() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl --head --location --silent --show-error --connect-timeout 8 --max-time 20 "$url" >/dev/null; then
+      warn "无法访问 ${url}；可使用 --proxy，GitHub 下载还可使用 --github-proxy"
+    fi
+  fi
+}
+
 network_check() {
   [[ $SKIP_NETWORK_CHECK -eq 1 || $DRY_RUN -eq 1 ]] && return 0
-  log "检查网络连通性（失败只提示，不会绕过服务地区或账号限制）"
-  local url
-  for url in "https://claude.ai" "https://api.github.com"; do
-    if command -v curl >/dev/null 2>&1; then
-      if ! curl --head --location --silent --show-error --connect-timeout 8 --max-time 20 "$url" >/dev/null; then
-        warn "无法访问 $url；可使用 --proxy，GitHub 下载还可使用 --github-proxy"
-      fi
-    fi
-  done
+  log "检查所选组件的网络连通性（失败只提示，不绕过地区、账号或服务条款限制）"
+  contains_component claude && network_check_url "https://claude.ai"
+  contains_component codex && network_check_url "https://chatgpt.com"
+  contains_component hermes && network_check_url "https://hermes-agent.nousresearch.com"
+  contains_component cc-switch && network_check_url "https://api.github.com"
+  return 0
 }
 
 detect_os() {
@@ -192,16 +339,23 @@ detect_distro() {
 
 make_temp_dir() {
   if [[ $DRY_RUN -eq 1 ]]; then
-    TMP_DIR="${TMPDIR:-/tmp}/cc-installer-dry-run"
+    TMP_DIR="${TMPDIR:-/tmp}/ai-cli-installer-dry-run"
   else
-    TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t cc-installer)"
+    TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t ai-cli-installer)"
+  fi
+}
+
+maybe_fail_component() {
+  local component="$1"
+  if [[ "${INSTALLER_TEST_FAIL_COMPONENT:-}" == "$component" ]]; then
+    warn "测试注入失败: $(component_label "$component")"
+    return 97
   fi
 }
 
 install_claude() {
-  [[ $SKIP_CLAUDE -eq 1 ]] && { log "已跳过 Claude Code"; return; }
   local installer="$TMP_DIR/claude-install.sh"
-  log "准备从 Anthropic 官方地址安装 Claude Code（通道: $CHANNEL）"
+  log "准备从 Anthropic 官方地址安装 Claude Code（通道: ${CHANNEL}）"
   download "$CLAUDE_INSTALL_URL" "$installer"
   if [[ $DRY_RUN -eq 1 ]]; then
     log "执行: bash $(printf '%q' "$installer") $(printf '%q' "$CHANNEL")"
@@ -209,6 +363,30 @@ install_claude() {
   fi
   chmod 700 "$installer"
   bash "$installer" "$CHANNEL"
+}
+
+install_codex() {
+  local installer="$TMP_DIR/codex-install.sh"
+  log "准备从 OpenAI 官方地址安装 Codex CLI"
+  download "$CODEX_INSTALL_URL" "$installer"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "执行: sh $(printf '%q' "$installer")"
+    return
+  fi
+  chmod 700 "$installer"
+  sh "$installer"
+}
+
+install_hermes() {
+  local installer="$TMP_DIR/hermes-install.sh"
+  log "准备从 Nous Research 官方地址安装 Hermes Agent"
+  download "$HERMES_INSTALL_URL" "$installer"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "执行: bash $(printf '%q' "$installer")"
+    return
+  fi
+  chmod 700 "$installer"
+  bash "$installer"
 }
 
 release_asset_url() {
@@ -258,7 +436,8 @@ PY
   else
     url="$(grep -E '"browser_download_url"' "$json" | sed -E 's/.*"(https:[^"]+)".*/\1/' | grep -Ei "$pattern" | head -n 1 || true)"
   fi
-  [[ -n "$url" ]] || die "未找到匹配资产: $pattern"
+
+  [[ -n "$url" ]] || die "未找到匹配的 CC Switch 安装包: $pattern"
   case "$url" in
     https://github.com/*|https://objects.githubusercontent.com/*|https://github-releases.githubusercontent.com/*) ;;
     *) die "Release 返回了非 GitHub 下载地址，已拒绝: $url" ;;
@@ -357,7 +536,6 @@ install_cc_switch_linux() {
 }
 
 install_cc_switch() {
-  [[ $SKIP_CC_SWITCH -eq 1 ]] && { log "已跳过 CC Switch"; return; }
   local os="$1" arch="$2" distro="$3"
   log "准备安装 CC Switch（官方仓库: ${CC_SWITCH_REPO}）"
   case "$os" in
@@ -367,41 +545,106 @@ install_cc_switch() {
   esac
 }
 
-verify_installation() {
-  log "安装结果检查"
-  if [[ $SKIP_CLAUDE -eq 0 ]]; then
-    if command -v claude >/dev/null 2>&1; then
-      claude --version || true
-    else
-      warn "当前 Shell 还找不到 claude。请重新打开终端，或把 ~/.local/bin 加入 PATH，然后运行 claude --version"
-    fi
+install_component() {
+  local component="$1" os="$2" arch="$3" distro="$4"
+  maybe_fail_component "$component"
+  case "$component" in
+    claude) install_claude ;;
+    codex) install_codex ;;
+    hermes) install_hermes ;;
+    cc-switch) install_cc_switch "$os" "$arch" "$distro" ;;
+    *) die "内部错误，未知组件: $component" ;;
+  esac
+}
+
+run_component() {
+  local component="$1" os="$2" arch="$3" distro="$4" label status
+  label="$(component_label "$component")"
+  printf '\n'
+  log "========== $label =========="
+  set +e
+  (
+    set -Eeuo pipefail
+    install_component "$component" "$os" "$arch" "$distro"
+  )
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]]; then
+    SUCCEEDED_COMPONENTS+=("$label")
+    log "$label: 成功"
+  else
+    FAILED_COMPONENTS+=("$label")
+    warn "$label: 失败（退出码 ${status}），继续处理其他组件"
   fi
-  if [[ $SKIP_CC_SWITCH -eq 0 ]]; then
-    log "CC Switch 安装完成后可从应用菜单启动；Linux AppImage 用户也可运行 ~/.local/bin/cc-switch.AppImage"
+}
+
+join_by_comma() {
+  local first=1 item
+  for item in "$@"; do
+    if [[ $first -eq 0 ]]; then printf ', '; fi
+    printf '%s' "$item"
+    first=0
+  done
+}
+
+verify_installation() {
+  [[ $DRY_RUN -eq 1 ]] && return
+  log "安装结果检查"
+  if contains_component claude; then
+    command -v claude >/dev/null 2>&1 && claude --version || warn "当前 Shell 还找不到 claude，请重新打开终端"
+  fi
+  if contains_component codex; then
+    command -v codex >/dev/null 2>&1 && codex --version || warn "当前 Shell 还找不到 codex，请重新打开终端"
+  fi
+  if contains_component hermes; then
+    command -v hermes >/dev/null 2>&1 && hermes --version || warn "当前 Shell 还找不到 hermes，请重新打开终端"
+  fi
+  if contains_component cc-switch; then
+    log "CC Switch 可从应用菜单启动；AppImage 路径为 ~/.local/bin/cc-switch.AppImage"
+  fi
+}
+
+print_summary() {
+  printf '\n'
+  log "========== 安装汇总 =========="
+  if [[ ${#SUCCEEDED_COMPONENTS[@]} -gt 0 ]]; then
+    log "成功: $(join_by_comma "${SUCCEEDED_COMPONENTS[@]}")"
+  fi
+  if [[ ${#SKIPPED_COMPONENTS[@]} -gt 0 ]]; then
+    log "跳过: $(join_by_comma "${SKIPPED_COMPONENTS[@]}")"
+  fi
+  if [[ ${#FAILED_COMPONENTS[@]} -gt 0 ]]; then
+    warn "失败: $(join_by_comma "${FAILED_COMPONENTS[@]}")"
   fi
 }
 
 main() {
   log "$PROGRAM_NAME"
-  log "说明：本脚本不绕过 Claude 的地区、账号或服务条款限制。"
+  log "说明：只使用各项目官方安装源，不绕过地区、账号或服务条款限制。"
+  resolve_selection
   make_temp_dir
-  local os arch distro
+
+  local os arch distro item
   os="$(detect_os)"
   arch="$(detect_arch)"
   distro="unknown"
   [[ "$os" == "linux" ]] && distro="$(detect_distro)"
   log "检测到: OS=$os ARCH=$arch DISTRO=$distro"
+  log "已选择: $(join_by_comma "${SELECTED_COMPONENTS[@]}")"
   [[ -n "$PROXY_URL" ]] && log "已为当前进程启用代理: $PROXY_URL"
   [[ -n "$GITHUB_PROXY" ]] && warn "已启用用户指定的 GitHub 代理前缀，请确保该服务可信"
+
   network_check
-  install_claude
-  install_cc_switch "$os" "$arch" "$distro"
+  for item in "${SELECTED_COMPONENTS[@]}"; do
+    run_component "$item" "$os" "$arch" "$distro"
+  done
+
+  verify_installation
+  print_summary
   if [[ $DRY_RUN -eq 1 ]]; then
     log "Dry-run 完成，未修改系统"
-  else
-    verify_installation
-    log "全部操作完成。运行 claude 开始登录，打开 CC Switch 配置供应商。"
   fi
+  [[ ${#FAILED_COMPONENTS[@]} -eq 0 ]]
 }
 
 main "$@"

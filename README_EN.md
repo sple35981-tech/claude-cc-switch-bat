@@ -1,13 +1,13 @@
-# Claude Code + CC Switch Cross-Platform Installer
+# Claude Code / Codex / Hermes / CC Switch Installer Collector
 
-One-command installers for Windows, macOS, Linux, and WSL:
+A selectable installer for Windows, macOS, Linux, Kali, and WSL. It installs any combination of:
 
-- **Claude Code** is installed from Anthropic's official native installer.
-- **CC Switch** is installed from the official releases of [`farion1231/cc-switch`](https://github.com/farion1231/cc-switch).
+- Claude Code from Anthropic's official installer.
+- OpenAI Codex CLI from OpenAI's official installer.
+- Hermes Agent from Nous Research's official installer.
+- CC Switch from the official `farion1231/cc-switch` GitHub releases.
 
-The scripts add proxy options, retries, network diagnostics, dynamic release selection, and dry-run support. They do not bypass regional availability, account restrictions, or service terms, and they do not embed API keys, shared accounts, or third-party relay services.
-
-## Quick start
+## Interactive installation
 
 Windows PowerShell:
 
@@ -21,40 +21,46 @@ macOS / Linux / WSL:
 curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.sh | bash
 ```
 
-## Proxy examples
+Select multiple entries such as `1,3,4`, or choose `5` for all tools.
+
+## Explicit selection
 
 ```powershell
-.\install.ps1 -Proxy http://127.0.0.1:7890
+.\install.ps1 -Install codex,hermes
+.\install.ps1 -Install all
 ```
 
 ```bash
-./install.sh --proxy http://127.0.0.1:7890
+./install.sh --install codex,hermes
+./install.sh --install all
 ```
 
-A user-supplied GitHub download prefix is also supported with `-GitHubProxy` or `--github-proxy`. No mirror is enabled by default; only use a service you trust.
+Valid names are `claude`, `codex`, `hermes`, `cc-switch`, and `all`.
+
+In a non-interactive environment with no explicit selection, the legacy default remains Claude Code plus CC Switch. For CI and servers, explicitly pass `--install` or `-Install`.
+
+## Proxy examples
+
+```powershell
+.\install.ps1 -Install all -Proxy http://127.0.0.1:7890
+```
+
+```bash
+./install.sh --install all --proxy http://127.0.0.1:7890
+```
+
+A custom GitHub download prefix only affects CC Switch releases and is never enabled by default.
 
 ## Dry run
 
 ```powershell
-.\install.ps1 -DryRun -SkipNetworkCheck
+.\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
 ```
 
 ```bash
-./install.sh --dry-run --skip-network-check
+./install.sh --install all --dry-run --non-interactive --skip-network-check
 ```
 
-## Verification
+Each component is isolated: one failure does not prevent the remaining selected components from being attempted. The installer prints a final success/failure summary and returns a non-zero status if any selected component failed.
 
-```bash
-claude --version
-claude doctor
-```
-
-## Tests
-
-```bash
-python3 -m unittest discover -s tests -v
-bash -n install.sh
-```
-
-Licensed under MIT. Claude Code and CC Switch remain subject to their own licenses, terms, and availability rules.
+The scripts do not embed API keys, shared accounts, unofficial relays, or default mirrors, and they do not bypass regional availability or service terms.
