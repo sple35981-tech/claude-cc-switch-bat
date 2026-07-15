@@ -162,10 +162,10 @@ class InstallerTests(unittest.TestCase):
             "[switch]$NoProgress",
             "[string]$LogFile",
             "Write-Progress",
-            "Invoke-Component",
         ):
             self.assertIn(token, content)
         self.assertRegex(content, r"Write-(?:Installer)?Log")
+        self.assertRegex(content, r"Invoke-(?:Installer)?Component")
         for url in (
             "https://claude.ai/install.ps1",
             "https://chatgpt.com/codex/install.ps1",
