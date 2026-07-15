@@ -1,3 +1,4 @@
+# PR synchronization trigger: assemble only after checks pass.
 name: apply installer payload
 
 on:
