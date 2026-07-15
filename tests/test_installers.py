@@ -4,15 +4,23 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASH_AVAILABLE = os.name != "nt" and shutil.which("bash") is not None
 
 
+def configure_utf8_locale(env: dict[str, str]) -> None:
+    locale_name = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
+    env["LANG"] = locale_name
+    env["LC_ALL"] = locale_name
+
+
 class InstallerRepositoryTests(unittest.TestCase):
     def run_bash(self, *args: str, env_updates: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
+        configure_utf8_locale(env)
         env.update(
             {
                 "INSTALLER_TEST_OS": "linux",
@@ -179,6 +187,7 @@ class InstallerRepositoryTests(unittest.TestCase):
     @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
     def test_bash_without_tty_falls_back_to_legacy_pair(self) -> None:
         env = os.environ.copy()
+        configure_utf8_locale(env)
         env.update(
             {
                 "INSTALLER_TEST_OS": "linux",
@@ -228,6 +237,7 @@ exit 0
             )
             fake_curl.chmod(0o755)
             env = os.environ.copy()
+            configure_utf8_locale(env)
             env.update(
                 {
                     "PATH": str(fake_bin) + os.pathsep + env["PATH"],
