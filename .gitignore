@@ -1,10 +1,4 @@
-__pycache__/
-*.py[cod]
-.DS_Store
-Thumbs.db
 *.log
 *.tmp
-cc-switch*.msi
-cc-switch*.deb
-cc-switch*.rpm
-cc-switch*.AppImage
+__pycache__/
+.worktrees/
