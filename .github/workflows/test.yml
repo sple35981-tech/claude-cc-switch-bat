@@ -8,54 +8,30 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  cross-platform:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Run repository tests
+      - name: Repository tests
+        shell: bash
+        run: python -m unittest discover -s tests -v
+      - name: Bash syntax and container path matrix
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          set +e
-          python -m unittest discover -s tests -v > repository-tests.log 2>&1
-          status=$?
-          cat repository-tests.log
-          exit "$status"
-
-      - name: Validate Bash syntax
-        if: runner.os != 'Windows'
-        run: bash -n install.sh
-
-      - name: Bash all-components dry run
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          INSTALLER_TEST_OS: linux
-          INSTALLER_TEST_ARCH: x86_64
-          INSTALLER_TEST_DISTRO: debian
-          INSTALLER_FAKE_ASSET_URL: https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Linux-x86_64.deb
-        run: bash install.sh --install all --dry-run --non-interactive --skip-network-check
-
-      - name: Validate PowerShell syntax and all-components dry run
+          bash -n install.sh
+          bash tests/container_matrix.sh
+      - name: PowerShell 5.1 syntax and all-component dry-run
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          Start-Transcript -Path powershell-validation.log -Force
           $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
@@ -68,17 +44,23 @@ jobs:
             exit 1
           }
           $env:INSTALLER_TEST_ARCH = 'AMD64'
-          $env:INSTALLER_FAKE_ASSET_URL = 'https://github.com/farion1231/cc-switch/releases/download/v9.9.9/CC-Switch-v9.9.9-Windows.msi'
-          .\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
-          Stop-Transcript
+          .\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck -NoProgress -LogFile "$env:TEMP\ai-cli-installer-ci.log"
 
-      - name: Upload failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-${{ matrix.os }}
-          path: |
-            repository-tests.log
-            powershell-validation.log
-          if-no-files-found: ignore
-          retention-days: 3
+  kali-container:
+    runs-on: ubuntu-latest
+    container: kalilinux/kali-rolling
+    steps:
+      - name: Install test dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash python3 curl ca-certificates
+      - uses: actions/checkout@v4
+      - name: Kali unit and smoke tests
+        shell: bash
+        run: |
+          test -f /.dockerenv
+          python3 -m unittest discover -s tests -v
+          bash -n install.sh
+          bash tests/container_matrix.sh
+          bash install.sh --install cc-switch --dry-run --non-interactive --skip-network-check --no-progress --log-file /tmp/kali-cc-switch.log
+          grep -q 'DISTRO=kali' /tmp/kali-cc-switch.log
