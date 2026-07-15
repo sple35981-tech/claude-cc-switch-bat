@@ -1,0 +1,210 @@
+  printf '%s' "${url}"
+}
+
+cc_switch_extension() {
+  local distro="$1"
+  case "${distro}" in
+    ubuntu|debian|linuxmint|pop|kali|zorin) printf 'deb' ;;
+    fedora|rhel|centos|rocky|almalinux|ol|opensuse*|sles) printf 'rpm' ;;
+    *) printf 'AppImage' ;;
+  esac
+}
+
+verify_cc_switch() {
+  local ext="$1" target="$2"
+  [[ ${DRY_RUN} -eq 0 ]] || { info "CC Switch: Dry-run 验证通过"; return 0; }
+  case "${ext}" in
+    deb)
+      if command -v dpkg-query >/dev/null 2>&1; then
+        local package_info
+        package_info="$(dpkg-query -W -f='${Package} ${Version}\n' 2>/dev/null | grep -Ei 'cc[- ]?switch' | head -n 1 || true)"
+        [[ -n "${package_info}" ]] && info "CC Switch: 已安装 ${package_info}" || warn "CC Switch: deb 已执行安装，但未从 dpkg-query 找到包名"
+      fi
+      ;;
+    rpm)
+      if command -v rpm >/dev/null 2>&1; then rpm -qa 2>/dev/null | grep -Ei 'cc[- ]?switch' | head -n 1 | while IFS= read -r line; do info "CC Switch: 已安装 ${line}"; done; fi
+      ;;
+    AppImage) [[ -x "${target}" ]] || { error "CC Switch AppImage 未正确安装: ${target}"; return 1; }; info "CC Switch AppImage: ${target}" ;;
+    macOS) [[ -d /Applications/CC-Switch.app || -d /Applications/CC\ Switch.app ]] || warn "CC Switch: 请在 Launchpad 或 /Applications 中确认应用" ;;
+  esac
+  return 0
+}
+
+install_cc_switch() {
+  local label="CC Switch" ext pattern url asset target=""
+  stage "${label}" "获取官方 Release 信息"
+  info "${label} 来源: ${CC_SWITCH_REPO} 官方 GitHub Releases"
+  [[ "${INSTALLER_TEST_FAIL_COMPONENT:-}" == "cc-switch" ]] && { error "${label}: 测试注入失败"; return 97; }
+
+  if [[ "${OS_NAME}" == "macos" ]] && command -v brew >/dev/null 2>&1; then
+    stage "${label}" "由 Homebrew 获取安装包"
+    info "Homebrew 将负责下载 CC Switch"
+    stage "${label}" "记录包管理器校验信息"
+    info "Homebrew 将执行其自身的包校验"
+    stage "${label}" "执行 Homebrew 安装"
+    run_logged "使用 Homebrew 安装 CC Switch" brew install --cask cc-switch || return
+    stage "${label}" "验证应用"
+    verify_cc_switch macOS ""
+    return
+  fi
+
+  if [[ "${OS_NAME}" == "macos" ]]; then
+    ext="macOS"
+    pattern='CC-Switch-v.*-macOS\.zip$'
+  else
+    ext="$(cc_switch_extension "${DISTRO_NAME}")"
+    pattern="CC-Switch-v.*-Linux-${ARCH_NAME}\.${ext}$"
+  fi
+  url="$(release_asset_url "${pattern}")" || return
+  asset="${TMP_DIR}/$(basename "${url}")"
+
+  stage "${label}" "下载安装包"
+  download "$(apply_github_proxy "${url}")" "${asset}" "CC Switch ${ext}" || return
+
+  stage "${label}" "记录安装包信息"
+  record_file_metadata "${asset}" "CC Switch ${ext}" || return
+
+  stage "${label}" "安装 ${ext} 包"
+  case "${ext}" in
+    deb)
+      if command -v apt >/dev/null 2>&1; then as_root "使用 apt 安装 CC Switch" apt install -y "${asset}" || return
+      else as_root "使用 dpkg 安装 CC Switch" dpkg -i "${asset}" || return; fi
+      ;;
+    rpm)
+      if command -v dnf >/dev/null 2>&1; then as_root "使用 dnf 安装 CC Switch" dnf install -y "${asset}" || return
+      elif command -v zypper >/dev/null 2>&1; then as_root "使用 zypper 安装 CC Switch" zypper --non-interactive install "${asset}" || return
+      elif command -v yum >/dev/null 2>&1; then as_root "使用 yum 安装 CC Switch" yum install -y "${asset}" || return
+      else as_root "使用 rpm 安装 CC Switch" rpm -Uvh "${asset}" || return; fi
+      ;;
+    AppImage)
+      target="${HOME:-/tmp}/.local/bin/cc-switch.AppImage"
+      run_logged "创建用户应用目录" mkdir -p "$(dirname "${target}")" "${HOME:-/tmp}/.local/share/applications" || return
+      run_logged "复制 CC Switch AppImage" cp "${asset}" "${target}" || return
+      run_logged "设置 AppImage 执行权限" chmod +x "${target}" || return
+      if [[ ${DRY_RUN} -eq 0 ]]; then
+        cat > "${HOME:-/tmp}/.local/share/applications/cc-switch.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=CC Switch
+Comment=Claude Code / Codex / Gemini CLI configuration manager
+Exec=${target}
+Terminal=false
+Categories=Development;
+EOF
+      fi
+      ;;
+    macOS)
+      if [[ ${DRY_RUN} -eq 0 ]]; then
+        local extract="${TMP_DIR}/cc-switch-macos" app
+        mkdir -p "${extract}" || return
+        command -v unzip >/dev/null 2>&1 || { error "macOS ZIP 安装需要 unzip"; return 1; }
+        run_logged "解压 CC Switch" unzip -q "${asset}" -d "${extract}" || return
+        app="$(find "${extract}" -type d -name '*.app' -print | head -n 1)"
+        [[ -n "${app}" ]] || { error "ZIP 中未找到 .app"; return 1; }
+        if [[ -w /Applications ]]; then run_logged "复制 CC Switch 到 /Applications" ditto "${app}" "/Applications/$(basename "${app}")" || return
+        else as_root "复制 CC Switch 到 /Applications" ditto "${app}" "/Applications/$(basename "${app}")" || return; fi
+      else
+        info "Dry-run: 将解压 ZIP 并复制到 /Applications"
+      fi
+      ;;
+  esac
+
+  stage "${label}" "验证安装结果"
+  verify_cc_switch "${ext}" "${target}"
+}
+
+install_component() {
+  case "$1" in
+    claude) install_claude ;;
+    codex) install_codex ;;
+    hermes) install_hermes ;;
+    cc-switch) install_cc_switch ;;
+    *) error "内部错误，未知组件: ${1}"; return 1 ;;
+  esac
+}
+
+run_component() {
+  local component="$1" label before status completed
+  label="$(component_label "${component}")"
+  before=${CURRENT_STEP}
+  info "========== ${label} =========="
+  set +e
+  install_component "${component}"
+  status=$?
+  set -e
+  completed=$((CURRENT_STEP - before))
+  while [[ ${completed} -lt 5 ]]; do
+    progress_step "${label}: 因失败跳过后续阶段"
+    completed=$((completed + 1))
+  done
+  if [[ ${status} -eq 0 ]]; then
+    SUCCEEDED_COMPONENTS+=("${label}")
+    info "${label}: 成功"
+  else
+    FAILED_COMPONENTS+=("${label}")
+    FAILURE_DETAILS+=("${label}: exit ${status}")
+    warn "${label}: 失败（退出码 ${status}），继续处理其他组件"
+  fi
+}
+
+print_banner() {
+  [[ ${QUIET} -eq 1 ]] && return 0
+  emit_terminal INFO "${PROGRAM_NAME} v${PROGRAM_VERSION}"
+  emit_terminal INFO "官方源安装；不绕过地区、账号或服务条款限制"
+}
+
+print_summary() {
+  local elapsed now
+  now="$(date +%s 2>/dev/null || printf '%s' "${RUN_STARTED_AT}")"
+  elapsed=$((now - RUN_STARTED_AT))
+  summary_line "========== 安装汇总 =========="
+  [[ ${#SUCCEEDED_COMPONENTS[@]} -eq 0 ]] || summary_line "成功: $(join_by_comma "${SUCCEEDED_COMPONENTS[@]}")"
+  [[ ${#SKIPPED_COMPONENTS[@]} -eq 0 ]] || summary_line "跳过: $(join_by_comma "${SKIPPED_COMPONENTS[@]}")"
+  if [[ ${#FAILED_COMPONENTS[@]} -gt 0 ]]; then
+    warn "失败: $(join_by_comma "${FAILED_COMPONENTS[@]}")"
+    [[ ${#FAILURE_DETAILS[@]} -eq 0 ]] || write_log ERROR "details=$(join_by_comma "${FAILURE_DETAILS[@]}")"
+  fi
+  summary_line "耗时: ${elapsed}s"
+  summary_line "日志: ${LOG_FILE}"
+}
+
+main() {
+  init_log
+  print_banner
+  resolve_selection || { print_summary; return 2; }
+
+  if [[ -n "${PROXY_URL}" ]]; then
+    export HTTP_PROXY="${PROXY_URL}" HTTPS_PROXY="${PROXY_URL}" http_proxy="${PROXY_URL}" https_proxy="${PROXY_URL}"
+  fi
+  if [[ ${NON_INTERACTIVE} -eq 1 ]]; then
+    export DEBIAN_FRONTEND=noninteractive
+  fi
+  supports_dynamic_progress && DYNAMIC_PROGRESS=1 || DYNAMIC_PROGRESS=0
+  TOTAL_STEPS=$((2 + $(component_count) * 5 + 1))
+
+  make_temp_dir
+  progress_step "检测操作系统与架构"
+  OS_NAME="$(detect_os)" || { error "不支持的系统: $(uname -s)"; return 2; }
+  ARCH_NAME="$(detect_arch)" || { error "不支持的 CPU 架构: ${INSTALLER_TEST_ARCH:-$(uname -m)}"; return 2; }
+  [[ "${OS_NAME}" == "linux" ]] && DISTRO_NAME="$(detect_distro)"
+  info "检测到: OS=${OS_NAME} ARCH=${ARCH_NAME} DISTRO=${DISTRO_NAME}"
+
+  local selection_text
+  selection_text="$(selected_csv)"
+  write_log CONTEXT "OS=${OS_NAME} ARCH=${ARCH_NAME} DISTRO=${DISTRO_NAME} selected=${selection_text} dry_run=${DRY_RUN} non_interactive=${NON_INTERACTIVE}"
+  debug_log "temp_dir=${TMP_DIR} progress_dynamic=${DYNAMIC_PROGRESS} proxy_enabled=$([[ -n "${PROXY_URL}" ]] && printf yes || printf no)"
+  [[ -z "${GITHUB_PROXY}" ]] || warn "已启用用户指定的 GitHub 下载前缀，请确认该服务可信"
+
+  progress_step "检查所选官方服务的网络连通性"
+  network_check
+
+  local component
+  for component in "${SELECTED_COMPONENTS[@]}"; do run_component "${component}"; done
+
+  progress_step "生成安装汇总"
+  finish_progress_line
+  print_summary
+  [[ ${#FAILED_COMPONENTS[@]} -eq 0 ]]
+}
+
+main "$@"
