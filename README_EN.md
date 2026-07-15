@@ -1,13 +1,18 @@
 # Claude Code / Codex / Hermes / CC Switch Installer Collector
 
-A selectable installer for Windows, macOS, Linux, Kali, and WSL. It installs any combination of:
+A dependency-free four-tool installer for Windows, macOS, Linux, Kali, and WSL. It installs from the official Claude Code, OpenAI Codex CLI, Nous Research Hermes Agent, and `farion1231/cc-switch` sources.
 
-- Claude Code from Anthropic's official installer.
-- OpenAI Codex CLI from OpenAI's official installer.
-- Hermes Agent from Nous Research's official installer.
-- CC Switch from the official `farion1231/cc-switch` GitHub releases.
+## Detailed progress
 
-## Interactive installation
+Every selected component reports four truthful stages:
+
+```text
+prepare -> download -> install -> verify
+```
+
+Interactive terminals receive an overall progress bar. CI, redirected output, non-TTY sessions, and `--no-progress` automatically receive stable line-oriented output. The final summary includes successes, failures, the failed stage, exit code, elapsed time, and the detailed log path.
+
+## One-line install
 
 Windows PowerShell:
 
@@ -15,52 +20,76 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.ps1 | iex
 ```
 
-macOS / Linux / WSL:
+macOS / Linux / Kali / WSL:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sple35981-tech/claude-cc-switch-bat/main/install.sh | bash
 ```
 
-Select multiple entries such as `1,3,4`, or choose `5` for all tools.
-
-## Explicit selection
-
-```powershell
-.\install.ps1 -Install codex,hermes
-.\install.ps1 -Install all
-```
+Install selected tools:
 
 ```bash
 ./install.sh --install codex,hermes
-./install.sh --install all
 ```
-
-Valid names are `claude`, `codex`, `hermes`, `cc-switch`, and `all`.
-
-In a non-interactive environment with no explicit selection, the legacy default remains Claude Code plus CC Switch. For CI and servers, explicitly pass `--install` or `-Install`.
-
-## Proxy examples
 
 ```powershell
-.\install.ps1 -Install all -Proxy http://127.0.0.1:7890
+.\install.ps1 -Install codex,hermes
 ```
+
+Valid component names are `claude,codex,hermes,cc-switch,all`.
+
+## Progress and log controls
+
+```bash
+./install.sh --install all --no-progress
+./install.sh --install all --quiet
+./install.sh --install cc-switch --log-file ./install.log
+```
+
+```powershell
+.\install.ps1 -Install all -NoProgress
+.\install.ps1 -Install all -Quiet
+.\install.ps1 -Install cc-switch -LogFile .\install.log
+```
+
+Non-dry-run executions create a UTF-8 log by default. Proxy user information, authorization values, and common API-key assignments are redacted before logging.
+
+## Proxy use
 
 ```bash
 ./install.sh --install all --proxy http://127.0.0.1:7890
 ```
 
-A custom GitHub download prefix only affects CC Switch releases and is never enabled by default.
-
-## Dry run
-
 ```powershell
-.\install.ps1 -Install all -DryRun -NonInteractive -SkipNetworkCheck
+.\install.ps1 -Install all -Proxy http://127.0.0.1:7890
 ```
+
+A user-supplied GitHub download prefix is supported through `--github-proxy` / `-GitHubProxy`. No third-party mirror is enabled by default.
+
+## Dry-run
 
 ```bash
-./install.sh --install all --dry-run --non-interactive --skip-network-check
+./install.sh --install all --dry-run --skip-network-check --no-progress
 ```
 
-Each component is isolated: one failure does not prevent the remaining selected components from being attempted. The installer prints a final success/failure summary and returns a non-zero status if any selected component failed.
+```powershell
+.\install.ps1 -Install all -DryRun -SkipNetworkCheck -NoProgress
+```
 
-The scripts do not embed API keys, shared accounts, unofficial relays, or default mirrors, and they do not bypass regional availability or service terms.
+## Exit status
+
+- `0`: all selected component workflows succeeded; a post-install PATH warning is non-fatal.
+- `1`: at least one component failed, while later components were still processed.
+- `2`: invalid arguments, unsupported platform, or initialization failure.
+
+Automation should inspect the exit code, failed-stage summary, and log file.
+
+## Validation
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 tests/container_matrix.py
+bash -n install.sh
+```
+
+The sandbox matrix covers Kali/DEB, Fedora/RPM, Arch/AppImage, macOS ARM64, non-TTY behavior, failure continuation, redaction, and the GitHub release URL contamination regression. GitHub Actions validates Ubuntu, macOS, and Windows PowerShell 5.1.
