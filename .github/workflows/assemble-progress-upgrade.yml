@@ -41,12 +41,29 @@ jobs:
           chmod +x install.sh tests/container_matrix.py
 
       - name: Commit assembled upgrade
+        id: publish
         shell: bash
         run: |
-          set -Eeuo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'feat: add detailed progress logs and validation'
-          git push origin HEAD:${{ github.head_ref || github.ref_name }}
+          set +e
+          {
+            set -x
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -A
+            git diff --cached --check
+            git status --short
+            git commit -m 'feat: add detailed progress logs and validation'
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+          } > assembler-publish.log 2>&1
+          status=$?
+          cat assembler-publish.log
+          exit "$status"
+
+      - name: Upload assembler diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assembler-publish-diagnostics
+          path: assembler-publish.log
+          if-no-files-found: error
+          retention-days: 3
