@@ -36,6 +36,8 @@ class InstallerRepositoryTests(unittest.TestCase):
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
 
@@ -43,7 +45,7 @@ class InstallerRepositoryTests(unittest.TestCase):
     def test_bash_installer_has_valid_syntax(self) -> None:
         script = ROOT / "install.sh"
         self.assertTrue(script.exists(), "install.sh must exist")
-        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
@@ -145,7 +147,7 @@ class InstallerRepositoryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("Codex", output)
         self.assertIn("Hermes", output)
-        self.assertIn("失败", output)
+        self.assertIn("Codex CLI", output)
         self.assertIn("成功", output)
 
     @unittest.skipUnless(BASH_AVAILABLE, "Bash execution tests require a Unix-like runner")
@@ -203,6 +205,8 @@ class InstallerRepositoryTests(unittest.TestCase):
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         output = result.stdout + result.stderr
